@@ -13,6 +13,7 @@ import type {
   DelegateAuditRecord,
   DelegateSessionRecord,
   DelegateTurnRecord,
+  DelegateWorkflowRecord,
   TokenUsage
 } from "../shared/types.js";
 import { NdjsonTransport } from "../acp-client/ndjson-transport.js";
@@ -92,7 +93,11 @@ export type ExecuteTaskAction =
   | "design_feedback"
   | "design_approve"
   | "planning_feedback"
-  | "planning_approve";
+  | "planning_approve"
+  | "delivery_test_pass"
+  | "delivery_test_fail"
+  | "remediation_approve"
+  | "cancel_follow_up";
 
 type WorkflowStage =
   | "RUNNING_DESIGN"
@@ -100,8 +105,13 @@ type WorkflowStage =
   | "RUNNING_PLANNING"
   | "WAITING_PLAN_APPROVAL"
   | "RUNNING_IMPLEMENTATION"
+  | "NEEDS_DELIVERY_TEST"
+  | "DELIVERY_TEST_FAILED"
+  | "RUNNING_REMEDIATION"
+  | "NEEDS_REMEDIATION_DECISION"
   | "NEEDS_USER_DECISION"
   | "TRANSFERRED_TO_MAIN"
+  | "CANCELLED"
   | "COMPLETED"
   | "FAILED";
 
@@ -181,8 +191,15 @@ interface TaskWorkflowState {
   activePhaseStartedAt?: string;
   lastCompletedAt?: string;
   pendingTask?: Promise<void>;
+  restoredWithoutRunner?: boolean;
   lastError?: { code: string; message: string; retryable: boolean };
   completedPayload?: Record<string, unknown>;
+  deliveryTestPassed?: boolean;
+  deliveryTestResult?: string;
+  deliveryTestFailures: string[];
+  remediationRound: number;
+  pendingRemediationPlan?: string;
+  lastImplementationResult?: Record<string, unknown>;
   handoffRequested?: boolean;
   pollIntervalMs: number;
   pollIntervalMinMs: number;
@@ -301,6 +318,7 @@ const DEFAULT_WORKFLOW_POLL_INTERVAL_MIN_MS = 60_000;
 const DEFAULT_WORKFLOW_POLL_INTERVAL_MAX_MS = 120_000;
 const DEFAULT_WORKFLOW_SILENCE_DECISION_MS = 300_000;
 const WORKFLOW_FOLLOW_UP_GATE_CHECK_MS = 250;
+const MAX_REMEDIATION_ROUNDS = 3;
 const MODEL_PREFERENCE_FILENAME = "preferred-models.json";
 const MAX_DETECTION_CONTEXT_CHARS = 60_000;
 const STAGE_DETECTION_PARSE_WAIT_MS = 8_000;
@@ -600,10 +618,11 @@ export class BridgeService {
         return await this.handleModelSelectAction(requestId, input, sessionAlias, workflowKey, timeoutMs);
       }
 
-      const workflow = this.loadWorkflowState(input.workspace_path, sessionAlias);
+      const workflow = await this.loadWorkflowState(input.workspace_path, sessionAlias);
       if (action === "status") {
         await this.waitForWorkflowFollowUpDue(workflow);
         await this.trackWorkflowStatusPoll(workflow);
+        await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.status", "codex", "OK", {
           sessionAlias,
           bridgeSessionId: workflow.bridgeSessionId
@@ -613,12 +632,22 @@ export class BridgeService {
 
       if (action === "continue_wait") {
         this.assertContinueWaitAllowed(workflow);
+        if (workflow.restoredWithoutRunner) {
+          await this.persistWorkflowState(workflow);
+          await this.audit(requestId, "task.execute.continue-wait", "codex", "OK", {
+            sessionAlias,
+            bridgeSessionId: workflow.bridgeSessionId,
+            restoredWithoutRunner: true
+          });
+          return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+        }
         const continuedAtMs = Date.now();
         workflow.lastProgressAtMs = continuedAtMs;
         workflow.lastProgressAt = new Date(continuedAtMs).toISOString();
         workflow.lastProgressUpdate = undefined;
         this.resetWorkflowPollCycle(workflow);
         workflow.stage = this.resolveRunningStageByPhase(workflow.activePhase);
+        await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.continue-wait", "codex", "OK", {
           sessionAlias,
           bridgeSessionId: workflow.bridgeSessionId,
@@ -629,7 +658,53 @@ export class BridgeService {
 
       if (action === "handoff_to_main") {
         const result = await this.handoffWorkflowToMain(workflow, timeoutMs);
+        await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.handoff-to-main", "codex", "OK", {
+          sessionAlias,
+          bridgeSessionId: workflow.bridgeSessionId
+        });
+        return makeResult(requestId, result);
+      }
+
+      if (action === "delivery_test_pass") {
+        const result = await this.handleDeliveryTestPass(workflow, input.feedback_text, timeoutMs);
+        await this.persistWorkflowState(workflow);
+        await this.audit(requestId, "task.execute.delivery-test-pass", "codex", "OK", {
+          sessionAlias,
+          bridgeSessionId: workflow.bridgeSessionId
+        });
+        return makeResult(requestId, result);
+      }
+
+      if (action === "delivery_test_fail") {
+        const failureText = this.requireFeedback(input.feedback_text, action);
+        await this.handleDeliveryTestFail(workflow, failureText);
+        await this.waitForWorkflowShortSyncWindow(workflow);
+        await this.persistWorkflowState(workflow);
+        await this.audit(requestId, "task.execute.delivery-test-fail", "codex", "OK", {
+          sessionAlias,
+          bridgeSessionId: workflow.bridgeSessionId,
+          remediationRound: workflow.remediationRound
+        });
+        return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+      }
+
+      if (action === "remediation_approve") {
+        await this.handleRemediationApprove(workflow, input.feedback_text);
+        await this.waitForWorkflowShortSyncWindow(workflow);
+        await this.persistWorkflowState(workflow);
+        await this.audit(requestId, "task.execute.remediation-approve", "codex", "OK", {
+          sessionAlias,
+          bridgeSessionId: workflow.bridgeSessionId,
+          remediationRound: workflow.remediationRound
+        });
+        return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+      }
+
+      if (action === "cancel_follow_up") {
+        const result = await this.handleCancelFollowUp(workflow, timeoutMs);
+        await this.persistWorkflowState(workflow);
+        await this.audit(requestId, "task.execute.cancel-follow-up", "codex", "OK", {
           sessionAlias,
           bridgeSessionId: workflow.bridgeSessionId
         });
@@ -643,6 +718,7 @@ export class BridgeService {
           await this.applyDesignFeedback(workflow, feedback);
         });
         await this.waitForWorkflowShortSyncWindow(workflow);
+        await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.design-feedback", "codex", "OK", {
           sessionAlias,
           bridgeSessionId: workflow.bridgeSessionId
@@ -656,6 +732,7 @@ export class BridgeService {
           await this.runPlanningPhase(workflow);
         });
         await this.waitForWorkflowShortSyncWindow(workflow);
+        await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.design-approve", "codex", "OK", {
           sessionAlias,
           bridgeSessionId: workflow.bridgeSessionId
@@ -670,6 +747,7 @@ export class BridgeService {
           await this.applyPlanningFeedback(workflow, feedback);
         });
         await this.waitForWorkflowShortSyncWindow(workflow);
+        await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.planning-feedback", "codex", "OK", {
           sessionAlias,
           bridgeSessionId: workflow.bridgeSessionId
@@ -679,10 +757,11 @@ export class BridgeService {
 
       this.assertWorkflowStage(workflow, ["WAITING_PLAN_APPROVAL"], action);
       this.launchWorkflowPhase(workflow, "RUNNING_IMPLEMENTATION", "implementation", async () => {
-        workflow.completedPayload = await this.runImplementationPhase(workflow);
-        workflow.stage = "COMPLETED";
+        workflow.lastImplementationResult = await this.runImplementationPhase(workflow);
+        this.enterDeliveryTestGate(workflow);
       });
       await this.waitForWorkflowShortSyncWindow(workflow);
+      await this.persistWorkflowState(workflow);
       await this.audit(requestId, "task.execute.planning-approve", "codex", "OK", {
         sessionAlias,
         bridgeSessionId: workflow.bridgeSessionId,
@@ -724,6 +803,16 @@ export class BridgeService {
     sessionAlias: string,
     workflowKey: string
   ): Promise<BridgeResult<unknown>> {
+    const existingWorkflow = await this.restoreExistingWorkflowForStart(workflowKey);
+    if (existingWorkflow) {
+      await this.audit(requestId, "task.execute.start.restore-existing", "codex", "OK", {
+        sessionAlias,
+        bridgeSessionId: existingWorkflow.bridgeSessionId,
+        stage: existingWorkflow.stage
+      });
+      return makeResult(requestId, this.buildWorkflowStatusResponse(existingWorkflow));
+    }
+
     this.ensureWorkflowSlotAvailable(workflowKey);
     const startDecision = this.resolveStartPhaseDecision(input);
     if (startDecision.phase === "need_user_input") {
@@ -929,8 +1018,10 @@ export class BridgeService {
     );
     this.workflowByKey.set(workflowKey, workflow);
     this.clearPendingStartInput(workflowKey);
+    await this.persistWorkflowState(workflow);
     this.launchWorkflowByEntryPhase(workflow);
     await this.waitForWorkflowShortSyncWindow(workflow);
+    await this.persistWorkflowState(workflow);
     await this.audit(requestId, "task.execute.start", "codex", "OK", {
       sessionAlias,
       bridgeSessionId: workflow.bridgeSessionId,
@@ -1270,17 +1361,364 @@ export class BridgeService {
     return `${workspacePath}::${sessionAlias}`;
   }
 
-  private loadWorkflowState(workspacePath: string, sessionAlias: string): TaskWorkflowState {
+  private async loadWorkflowState(workspacePath: string, sessionAlias: string): Promise<TaskWorkflowState> {
     const key = this.toWorkflowKey(workspacePath, sessionAlias);
     const state = this.workflowByKey.get(key);
-    if (!state) {
-      throw new BridgeError(
-        ErrorCodes.WORKFLOW_NOT_FOUND,
-        "未找到进行中的委派流程，请先使用 action=start",
-        false
-      );
+    if (state) {
+      return state;
     }
-    return state;
+
+    const record = await this.findPersistedWorkflow(key);
+    if (record) {
+      const restored = this.restoreWorkflowState(record);
+      this.workflowByKey.set(key, restored);
+      return restored;
+    }
+
+    throw new BridgeError(
+      ErrorCodes.WORKFLOW_NOT_FOUND,
+      "未找到进行中的委派流程，请先使用 action=start",
+      false
+    );
+  }
+
+  private async findPersistedWorkflow(workflowKey: string): Promise<DelegateWorkflowRecord | undefined> {
+    try {
+      return await this.store.findWorkflowByKey(workflowKey);
+    } catch (error) {
+      this.logger.warn("workflow.persisted_lookup_failed", {
+        workflowKey,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return undefined;
+    }
+  }
+
+  private async persistWorkflowState(workflow: TaskWorkflowState): Promise<void> {
+    const workflowKey = this.toWorkflowKey(workflow.workspacePath, workflow.sessionAlias);
+    const timestamp = now();
+    try {
+      const existing = await this.store.findWorkflowByKey(workflowKey);
+      await this.store.saveWorkflow({
+        workflowKey,
+        workspacePath: workflow.workspacePath,
+        sessionAlias: workflow.sessionAlias,
+        bridgeSessionId: workflow.bridgeSessionId,
+        stage: workflow.stage,
+        snapshot: this.toWorkflowSnapshot(workflow),
+        createdAt: existing?.createdAt ?? timestamp,
+        updatedAt: timestamp
+      });
+    } catch (error) {
+      this.logger.warn("workflow.persist_failed", {
+        workflowKey,
+        stage: workflow.stage,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  private persistWorkflowStateSoon(workflow: TaskWorkflowState): void {
+    void this.persistWorkflowState(workflow);
+  }
+
+  private toWorkflowSnapshot(workflow: TaskWorkflowState): Record<string, unknown> {
+    return {
+      workflowId: workflow.workflowId,
+      sessionAlias: workflow.sessionAlias,
+      workspacePath: workflow.workspacePath,
+      bridgeSessionId: workflow.bridgeSessionId,
+      activeModel: workflow.activeModel,
+      activeAgentMode: workflow.activeAgentMode,
+      fallbackModels: workflow.fallbackModels,
+      requirementText: workflow.requirementText,
+      detectedStartPhase: workflow.detectedStartPhase,
+      detectionEvidence: workflow.detectionEvidence,
+      acceptanceCriteria: workflow.acceptanceCriteria,
+      maxReworkRounds: workflow.maxReworkRounds,
+      autoClose: workflow.autoClose,
+      timeoutMs: workflow.timeoutMs,
+      syncWaitMs: workflow.syncWaitMs,
+      stage: workflow.stage,
+      activePhase: workflow.activePhase,
+      activePhaseStartedAt: workflow.activePhaseStartedAt,
+      lastCompletedAt: workflow.lastCompletedAt,
+      lastError: workflow.lastError,
+      completedPayload: workflow.completedPayload,
+      deliveryTestPassed: workflow.deliveryTestPassed,
+      deliveryTestResult: workflow.deliveryTestResult,
+      deliveryTestFailures: workflow.deliveryTestFailures,
+      remediationRound: workflow.remediationRound,
+      pendingRemediationPlan: workflow.pendingRemediationPlan,
+      lastImplementationResult: workflow.lastImplementationResult,
+      handoffRequested: workflow.handoffRequested,
+      pollIntervalMs: workflow.pollIntervalMs,
+      pollIntervalMinMs: workflow.pollIntervalMinMs,
+      pollIntervalMaxMs: workflow.pollIntervalMaxMs,
+      silenceDecisionMs: workflow.silenceDecisionMs,
+      currentPollCount: workflow.currentPollCount,
+      currentPollCycle: workflow.currentPollCycle,
+      lastCountedPollAtMs: workflow.lastCountedPollAtMs,
+      nextPollDueAtMs: workflow.nextPollDueAtMs,
+      lastProgressAtMs: workflow.lastProgressAtMs,
+      lastProgressAt: workflow.lastProgressAt,
+      progressCursorByTurn: workflow.progressCursorByTurn,
+      lastProgressUpdate: workflow.lastProgressUpdate,
+      phaseGates: workflow.phaseGates,
+      steps: workflow.steps,
+      idempotencySeq: workflow.idempotencySeq
+    };
+  }
+
+  private restoreWorkflowState(record: DelegateWorkflowRecord): TaskWorkflowState {
+    const snapshot = record.snapshot;
+    const savedStage = this.readWorkflowStage(snapshot.stage) ?? this.readWorkflowStage(record.stage) ?? "FAILED";
+    const restoredWithoutRunner = this.isRunningStage(savedStage);
+    const stage = restoredWithoutRunner ? "NEEDS_USER_DECISION" : savedStage;
+
+    return {
+      workflowId: this.readString(snapshot.workflowId) ?? `${Date.now()}`,
+      sessionAlias: record.sessionAlias,
+      workspacePath: record.workspacePath,
+      bridgeSessionId: record.bridgeSessionId,
+      activeModel: this.readString(snapshot.activeModel),
+      activeAgentMode: this.readAgentMode(snapshot.activeAgentMode),
+      fallbackModels: this.readStringArray(snapshot.fallbackModels),
+      requirementText: this.readString(snapshot.requirementText) ?? "",
+      detectedStartPhase: this.readWorkflowEntryPhase(snapshot.detectedStartPhase) ?? "implementation",
+      detectionEvidence: this.readStringArray(snapshot.detectionEvidence),
+      acceptanceCriteria: this.readString(snapshot.acceptanceCriteria),
+      maxReworkRounds: this.readNumber(snapshot.maxReworkRounds) ?? 2,
+      autoClose: this.readBoolean(snapshot.autoClose) ?? true,
+      timeoutMs: this.readNumber(snapshot.timeoutMs),
+      syncWaitMs: this.readNumber(snapshot.syncWaitMs) ?? (this.runtime.workflowSyncWaitMs ?? DEFAULT_WORKFLOW_SYNC_WAIT_MS),
+      stage,
+      activePhase: this.readWorkflowPhase(snapshot.activePhase),
+      activePhaseStartedAt: this.readString(snapshot.activePhaseStartedAt),
+      lastCompletedAt: this.readString(snapshot.lastCompletedAt),
+      restoredWithoutRunner,
+      lastError: this.readError(snapshot.lastError),
+      completedPayload: this.readRecord(snapshot.completedPayload),
+      deliveryTestPassed: this.readBoolean(snapshot.deliveryTestPassed),
+      deliveryTestResult: this.readString(snapshot.deliveryTestResult),
+      deliveryTestFailures: this.readStringArray(snapshot.deliveryTestFailures),
+      remediationRound: this.readNumber(snapshot.remediationRound) ?? 0,
+      pendingRemediationPlan: this.readString(snapshot.pendingRemediationPlan),
+      lastImplementationResult: this.readRecord(snapshot.lastImplementationResult),
+      handoffRequested: this.readBoolean(snapshot.handoffRequested),
+      pollIntervalMs: this.readNumber(snapshot.pollIntervalMs) ?? DEFAULT_WORKFLOW_POLL_INTERVAL_MS,
+      pollIntervalMinMs: this.readNumber(snapshot.pollIntervalMinMs) ?? DEFAULT_WORKFLOW_POLL_INTERVAL_MIN_MS,
+      pollIntervalMaxMs: this.readNumber(snapshot.pollIntervalMaxMs) ?? DEFAULT_WORKFLOW_POLL_INTERVAL_MAX_MS,
+      silenceDecisionMs: this.readNumber(snapshot.silenceDecisionMs) ?? DEFAULT_WORKFLOW_SILENCE_DECISION_MS,
+      currentPollCount: this.readNumber(snapshot.currentPollCount) ?? 0,
+      currentPollCycle: this.readNumber(snapshot.currentPollCycle) ?? 0,
+      lastCountedPollAtMs: this.readNumber(snapshot.lastCountedPollAtMs),
+      nextPollDueAtMs: this.readNumber(snapshot.nextPollDueAtMs),
+      lastProgressAtMs: this.readNumber(snapshot.lastProgressAtMs),
+      lastProgressAt: this.readString(snapshot.lastProgressAt),
+      progressCursorByTurn: this.readNumberRecord(snapshot.progressCursorByTurn),
+      lastProgressUpdate: this.readProgressUpdate(snapshot.lastProgressUpdate),
+      phaseGates: this.readPhaseGates(snapshot.phaseGates),
+      steps: this.readWorkflowSteps(snapshot.steps),
+      idempotencySeq: this.readNumber(snapshot.idempotencySeq) ?? 0
+    };
+  }
+
+  private readString(value: unknown): string | undefined {
+    return typeof value === "string" ? value : undefined;
+  }
+
+  private readNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  }
+
+  private readBoolean(value: unknown): boolean | undefined {
+    return typeof value === "boolean" ? value : undefined;
+  }
+
+  private readRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
+  }
+
+  private readStringArray(value: unknown): string[] {
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  }
+
+  private readNumberRecord(value: unknown): Record<string, number> {
+    const record = this.readRecord(value);
+    if (!record) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(record).filter((entry): entry is [string, number] => typeof entry[1] === "number")
+    );
+  }
+
+  private readWorkflowStage(value: unknown): WorkflowStage | undefined {
+    const stage = this.readString(value);
+    const allowed: WorkflowStage[] = [
+      "RUNNING_DESIGN",
+      "WAITING_DESIGN_APPROVAL",
+      "RUNNING_PLANNING",
+      "WAITING_PLAN_APPROVAL",
+      "RUNNING_IMPLEMENTATION",
+      "NEEDS_DELIVERY_TEST",
+      "DELIVERY_TEST_FAILED",
+      "RUNNING_REMEDIATION",
+      "NEEDS_REMEDIATION_DECISION",
+      "NEEDS_USER_DECISION",
+      "TRANSFERRED_TO_MAIN",
+      "CANCELLED",
+      "COMPLETED",
+      "FAILED"
+    ];
+    return stage && allowed.includes(stage as WorkflowStage) ? (stage as WorkflowStage) : undefined;
+  }
+
+  private readWorkflowPhase(value: unknown): WorkflowPhase | undefined {
+    const phase = this.readString(value);
+    return phase === "design" || phase === "planning" || phase === "implementation" || phase === "rework"
+      ? phase
+      : undefined;
+  }
+
+  private readWorkflowEntryPhase(value: unknown): WorkflowEntryPhase | undefined {
+    const phase = this.readString(value);
+    return phase === "design" || phase === "planning" || phase === "implementation" ? phase : undefined;
+  }
+
+  private readAgentMode(value: unknown): "plan" | "build" | undefined {
+    const mode = this.readString(value);
+    return mode === "plan" || mode === "build" ? mode : undefined;
+  }
+
+  private readError(value: unknown): { code: string; message: string; retryable: boolean } | undefined {
+    const record = this.readRecord(value);
+    if (!record) {
+      return undefined;
+    }
+    const code = this.readString(record.code);
+    const message = this.readString(record.message);
+    if (!code || !message) {
+      return undefined;
+    }
+    return {
+      code,
+      message,
+      retryable: this.readBoolean(record.retryable) ?? false
+    };
+  }
+
+  private readProgressUpdate(value: unknown): WorkflowProgressUpdate | undefined {
+    const record = this.readRecord(value);
+    if (!record) {
+      return undefined;
+    }
+    return {
+      hasNewOutput: this.readBoolean(record.hasNewOutput) ?? false,
+      text: this.readString(record.text) ?? "",
+      eventCount: this.readNumber(record.eventCount) ?? 0,
+      turnId: this.readString(record.turnId),
+      latestEventSeq: this.readNumber(record.latestEventSeq),
+      observedAt: this.readString(record.observedAt) ?? now()
+    };
+  }
+
+  private readPhaseGates(value: unknown): TaskWorkflowState["phaseGates"] {
+    const record = this.readRecord(value);
+    if (!record) {
+      return {};
+    }
+    return {
+      design: this.readWorkflowGate(record.design),
+      planning: this.readWorkflowGate(record.planning)
+    };
+  }
+
+  private readWorkflowGate(value: unknown): WorkflowGateState | undefined {
+    const record = this.readRecord(value);
+    if (!record) {
+      return undefined;
+    }
+    return {
+      passed: this.readBoolean(record.passed) ?? false,
+      attempts: this.readNumber(record.attempts) ?? 0,
+      missingSections: this.readStringArray(record.missingSections)
+    };
+  }
+
+  private readWorkflowSteps(value: unknown): WorkflowStep[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value.flatMap((item) => {
+      const record = this.readRecord(item);
+      const phase = this.readWorkflowPhase(record?.phase);
+      if (!record || !phase) {
+        return [];
+      }
+      const step: WorkflowStep = {
+        phase,
+        turn_id: this.readString(record.turn_id),
+        stop_reason: this.readString(record.stop_reason),
+        summary: this.readString(record.summary),
+        success: this.readBoolean(record.success) ?? false,
+        error: this.readError(record.error)
+      };
+      return [step];
+    });
+  }
+
+  private restoredWorkflowCannotStream(workflow: TaskWorkflowState): boolean {
+    return Boolean(workflow.restoredWithoutRunner && !workflow.pendingTask);
+  }
+
+  private async restoreExistingWorkflowForStart(workflowKey: string): Promise<TaskWorkflowState | undefined> {
+    const existing = this.workflowByKey.get(workflowKey);
+    if (existing) {
+      return this.isTerminalStage(existing.stage) ? undefined : existing;
+    }
+
+    const record = await this.findPersistedWorkflow(workflowKey);
+    if (!record) {
+      return undefined;
+    }
+
+    const restored = this.restoreWorkflowState(record);
+    if (this.isTerminalStage(restored.stage)) {
+      return undefined;
+    }
+    this.workflowByKey.set(workflowKey, restored);
+    return restored;
+  }
+
+  private isTerminalStage(stage: WorkflowStage): boolean {
+    return (
+      stage === "COMPLETED" ||
+      stage === "FAILED" ||
+      stage === "TRANSFERRED_TO_MAIN" ||
+      stage === "CANCELLED"
+    );
+  }
+
+  private buildRestoredWorkflowDecisionResponse(workflow: TaskWorkflowState): Record<string, unknown> {
+    return {
+      ...this.buildWorkflowBasePayload(workflow),
+      current_stage: "NEEDS_USER_DECISION",
+      workflow_status: "NEEDS_USER_DECISION",
+      business_stage: "委派恢复决策",
+      user_message: "当前委派执行端无法继续回传进展，后续需要由主会话接手处理。",
+      next_business_action: "选择主会话接手，继续完成后续整改、交付测试或收尾工作",
+      next_action_required: ["handoff_to_main"],
+      user_options: [
+        {
+          action: "handoff_to_main",
+          description: "主会话接手：停止依赖已中断的委派执行端，由主会话继续处理后续工作"
+        }
+      ]
+    };
   }
 
   private assertWorkflowStage(
@@ -1318,11 +1756,7 @@ export class BridgeService {
     if (!existing) {
       return;
     }
-    if (
-      existing.stage === "COMPLETED" ||
-      existing.stage === "FAILED" ||
-      existing.stage === "TRANSFERRED_TO_MAIN"
-    ) {
+    if (this.isTerminalStage(existing.stage)) {
       this.workflowByKey.delete(workflowKey);
       return;
     }
@@ -1342,8 +1776,8 @@ export class BridgeService {
     }
     if (workflow.detectedStartPhase === "implementation") {
       this.launchWorkflowPhase(workflow, "RUNNING_IMPLEMENTATION", "implementation", async () => {
-        workflow.completedPayload = await this.runImplementationPhase(workflow);
-        workflow.stage = "COMPLETED";
+        workflow.lastImplementationResult = await this.runImplementationPhase(workflow);
+        this.enterDeliveryTestGate(workflow);
       });
       return;
     }
@@ -1354,7 +1788,7 @@ export class BridgeService {
 
   private launchWorkflowPhase(
     workflow: TaskWorkflowState,
-    runningStage: "RUNNING_DESIGN" | "RUNNING_PLANNING" | "RUNNING_IMPLEMENTATION",
+    runningStage: "RUNNING_DESIGN" | "RUNNING_PLANNING" | "RUNNING_IMPLEMENTATION" | "RUNNING_REMEDIATION",
     phase: WorkflowPhase,
     runner: () => Promise<void>
   ): void {
@@ -1367,12 +1801,14 @@ export class BridgeService {
     workflow.activePhase = phase;
     workflow.activePhaseStartedAt = startedAt;
     workflow.lastError = undefined;
+    workflow.restoredWithoutRunner = false;
     workflow.handoffRequested = false;
     workflow.lastProgressAtMs = startedAtMs;
     workflow.lastProgressAt = startedAt;
     workflow.lastProgressUpdate = undefined;
     workflow.progressCursorByTurn = {};
     this.resetWorkflowPollCycle(workflow);
+    this.persistWorkflowStateSoon(workflow);
     const task = (async () => {
       try {
         await runner();
@@ -1392,6 +1828,8 @@ export class BridgeService {
         workflow.lastCompletedAt = now();
         workflow.activePhase = undefined;
         workflow.pendingTask = undefined;
+        workflow.restoredWithoutRunner = false;
+        this.persistWorkflowStateSoon(workflow);
       }
     })();
     workflow.pendingTask = task;
@@ -1717,6 +2155,17 @@ export class BridgeService {
   }
 
   private async trackWorkflowStatusPoll(workflow: TaskWorkflowState): Promise<void> {
+    if (this.restoredWorkflowCannotStream(workflow)) {
+      workflow.stage = "NEEDS_USER_DECISION";
+      workflow.lastProgressUpdate = {
+        hasNewOutput: false,
+        text: "当前委派执行端无法继续回传进展。",
+        eventCount: 0,
+        observedAt: now()
+      };
+      return;
+    }
+
     if (!workflow.pendingTask || !this.isRunningStage(workflow.stage)) {
       workflow.lastProgressUpdate = undefined;
       return;
@@ -1791,17 +2240,23 @@ export class BridgeService {
       stage === "RUNNING_DESIGN" ||
       stage === "RUNNING_PLANNING" ||
       stage === "RUNNING_IMPLEMENTATION" ||
+      stage === "RUNNING_REMEDIATION" ||
       stage === "NEEDS_USER_DECISION"
     );
   }
 
   private isFollowUpGatedStage(stage: WorkflowStage): boolean {
-    return stage === "RUNNING_DESIGN" || stage === "RUNNING_PLANNING" || stage === "RUNNING_IMPLEMENTATION";
+    return (
+      stage === "RUNNING_DESIGN" ||
+      stage === "RUNNING_PLANNING" ||
+      stage === "RUNNING_IMPLEMENTATION" ||
+      stage === "RUNNING_REMEDIATION"
+    );
   }
 
   private resolveRunningStageByPhase(
     phase: WorkflowPhase | undefined
-  ): "RUNNING_DESIGN" | "RUNNING_PLANNING" | "RUNNING_IMPLEMENTATION" {
+  ): "RUNNING_DESIGN" | "RUNNING_PLANNING" | "RUNNING_IMPLEMENTATION" | "RUNNING_REMEDIATION" {
     if (!phase) {
       throw new BridgeError(ErrorCodes.WORKFLOW_INVALID_TRANSITION, "当前没有可恢复等待的运行阶段", false);
     }
@@ -1811,10 +2266,16 @@ export class BridgeService {
     if (phase === "planning") {
       return "RUNNING_PLANNING";
     }
+    if (phase === "rework") {
+      return "RUNNING_REMEDIATION";
+    }
     return "RUNNING_IMPLEMENTATION";
   }
 
   private assertContinueWaitAllowed(workflow: TaskWorkflowState): void {
+    if (workflow.stage === "NEEDS_USER_DECISION" && this.restoredWorkflowCannotStream(workflow)) {
+      return;
+    }
     if (!workflow.pendingTask || workflow.stage !== "NEEDS_USER_DECISION") {
       throw new BridgeError(
         ErrorCodes.WORKFLOW_INVALID_TRANSITION,
@@ -1872,6 +2333,120 @@ export class BridgeService {
       cancelled: true,
       closed: true
     };
+  }
+
+  private enterDeliveryTestGate(workflow: TaskWorkflowState): void {
+    workflow.stage = "NEEDS_DELIVERY_TEST";
+    workflow.activePhase = undefined;
+    workflow.activePhaseStartedAt = undefined;
+    workflow.lastCompletedAt = now();
+  }
+
+  private async handleDeliveryTestPass(
+    workflow: TaskWorkflowState,
+    feedbackText: string | undefined,
+    timeoutMs?: number
+  ): Promise<Record<string, unknown>> {
+    this.assertWorkflowStage(workflow, ["NEEDS_DELIVERY_TEST"], "delivery_test_pass");
+    const closed = await this.closeWorkflowSessionIfNeeded(workflow, timeoutMs, "交付测试通过后关闭 ACP 会话失败");
+    workflow.deliveryTestPassed = true;
+    workflow.deliveryTestResult = feedbackText?.trim() || "真实业务交付测试通过";
+    workflow.stage = "COMPLETED";
+    workflow.lastCompletedAt = now();
+    workflow.completedPayload = {
+      ...this.buildWorkflowBasePayload(workflow),
+      current_stage: "COMPLETED",
+      workflow_status: "COMPLETED",
+      business_stage: "交付完成",
+      user_message: "真实业务交付测试已通过，本次任务可以判定完成。",
+      next_business_action: null,
+      next_action_required: null,
+      workflow_completed: true,
+      delivery_test_passed: true,
+      delivery_test_result: workflow.deliveryTestResult,
+      auto_closed: closed
+    };
+    return workflow.completedPayload;
+  }
+
+  private async handleDeliveryTestFail(workflow: TaskWorkflowState, failureText: string): Promise<void> {
+    this.assertWorkflowStage(workflow, ["NEEDS_DELIVERY_TEST"], "delivery_test_fail");
+    workflow.deliveryTestPassed = false;
+    workflow.deliveryTestFailures.push(failureText);
+    workflow.deliveryTestResult = failureText;
+    workflow.pendingRemediationPlan = undefined;
+    if (workflow.remediationRound >= MAX_REMEDIATION_ROUNDS) {
+      workflow.stage = "NEEDS_REMEDIATION_DECISION";
+      workflow.lastCompletedAt = now();
+      return;
+    }
+    this.launchWorkflowPhase(workflow, "RUNNING_REMEDIATION", "rework", async () => {
+      await this.runRemediationPlanPhase(workflow, failureText);
+    });
+  }
+
+  private async handleRemediationApprove(
+    workflow: TaskWorkflowState,
+    feedbackText: string | undefined
+  ): Promise<void> {
+    this.assertWorkflowStage(workflow, ["DELIVERY_TEST_FAILED"], "remediation_approve");
+    if (workflow.remediationRound >= MAX_REMEDIATION_ROUNDS) {
+      workflow.stage = "NEEDS_REMEDIATION_DECISION";
+      return;
+    }
+    workflow.remediationRound += 1;
+    this.launchWorkflowPhase(workflow, "RUNNING_REMEDIATION", "rework", async () => {
+      await this.runRemediationImplementationPhase(workflow, feedbackText);
+      this.enterDeliveryTestGate(workflow);
+    });
+  }
+
+  private async handleCancelFollowUp(
+    workflow: TaskWorkflowState,
+    timeoutMs?: number
+  ): Promise<Record<string, unknown>> {
+    this.assertWorkflowStage(workflow, ["NEEDS_REMEDIATION_DECISION"], "cancel_follow_up");
+    const closed = await this.closeWorkflowSessionIfNeeded(workflow, timeoutMs, "取消后续工作时关闭 ACP 会话失败");
+    workflow.stage = "CANCELLED";
+    workflow.lastCompletedAt = now();
+    workflow.pendingTask = undefined;
+    workflow.activePhase = undefined;
+    return {
+      ...this.buildWorkflowBasePayload(workflow),
+      current_stage: "CANCELLED",
+      workflow_status: "CANCELLED",
+      business_stage: "后续工作已取消",
+      user_message: "已取消后续工作。本次任务未通过真实业务交付测试，不能声明交付完成。",
+      next_business_action: null,
+      next_action_required: null,
+      workflow_completed: false,
+      delivery_test_passed: false,
+      auto_closed: closed
+    };
+  }
+
+  private async closeWorkflowSessionIfNeeded(
+    workflow: TaskWorkflowState,
+    timeoutMs: number | undefined,
+    failureMessage: string
+  ): Promise<boolean> {
+    if (!workflow.autoClose) {
+      return false;
+    }
+    const closeResult = await this.close({
+      bridge_session_id: workflow.bridgeSessionId,
+      force: true,
+      timeout_ms: timeoutMs ?? workflow.timeoutMs
+    });
+    if (!closeResult.success) {
+      const error = closeResult.error ?? {
+        code: ErrorCodes.SESSION_CLOSE_FAILED,
+        message: failureMessage,
+        retryable: true
+      };
+      throw new BridgeError(error.code as ErrorCode, error.message, error.retryable);
+    }
+    return true;
   }
 
   private nextWorkflowIdempotencyKey(workflow: TaskWorkflowState, label: string): string {
@@ -2004,6 +2579,8 @@ export class BridgeService {
       timeoutMs: workflowTurnTimeoutMs,
       syncWaitMs: this.runtime.workflowSyncWaitMs ?? DEFAULT_WORKFLOW_SYNC_WAIT_MS,
       stage: "RUNNING_DESIGN",
+      deliveryTestFailures: [],
+      remediationRound: 0,
       phaseGates: {},
       steps: [],
       idempotencySeq: 0,
@@ -2181,42 +2758,44 @@ export class BridgeService {
       completedByModelSignal = await this.hasDoneSignal(reworkResult);
     }
 
-    let closed = false;
-    if (workflow.autoClose) {
-      const closeResult = await this.close({
-        bridge_session_id: workflow.bridgeSessionId,
-        force: true,
-        timeout_ms: workflow.timeoutMs
-      });
-      if (!closeResult.success) {
-        const closeError = closeResult.error ?? {
-          code: ErrorCodes.SESSION_CLOSE_FAILED,
-          message: "会话关闭失败",
-          retryable: true
-        };
-        throw new BridgeError(closeError.code as ErrorCode, closeError.message, closeError.retryable);
-      }
-      closed = true;
-    }
-
     return {
-      session_alias: workflow.sessionAlias,
-      bridge_session_id: workflow.bridgeSessionId,
-      detected_start_phase: workflow.detectedStartPhase,
-      detection_evidence: workflow.detectionEvidence,
-      current_model: workflow.activeModel,
-      current_agent_mode: workflow.activeAgentMode,
-      current_stage: "COMPLETED",
-      workflow_status: "COMPLETED",
-      next_action_required: null,
-      auto_closed: closed,
-      workflow_completed: completedByModelSignal || workflow.maxReworkRounds === 0,
+      implementation_completed: completedByModelSignal,
       phase_gates: this.toPhaseGatesPayload(workflow),
       steps: workflow.steps
     };
   }
 
-  private buildWorkflowStatusResponse(workflow: TaskWorkflowState): Record<string, unknown> {
+  private async runRemediationPlanPhase(workflow: TaskWorkflowState, failureText: string): Promise<void> {
+    await this.setWorkflowAgentMode(workflow, "plan", true);
+    const result = await this.executeWorkflowTurnWithModelFallback(
+      workflow,
+      `remediation-plan-${workflow.remediationRound + 1}`,
+      "rework",
+      this.buildRemediationPlanPrompt(workflow, failureText)
+    );
+    workflow.steps.push(this.turnResultToStep("rework", result));
+    this.ensureTurnSuccess(result, "整改方案与计划生成失败");
+    const data = result.data as { summary?: string } | undefined;
+    workflow.pendingRemediationPlan = data?.summary ?? failureText;
+    workflow.stage = "DELIVERY_TEST_FAILED";
+  }
+
+  private async runRemediationImplementationPhase(
+    workflow: TaskWorkflowState,
+    feedbackText: string | undefined
+  ): Promise<void> {
+    await this.setWorkflowAgentMode(workflow, "build", true);
+    const result = await this.executeWorkflowTurnWithModelFallback(
+      workflow,
+      `remediation-implementation-${workflow.remediationRound}`,
+      "rework",
+      this.buildRemediationImplementationPrompt(workflow, feedbackText)
+    );
+    workflow.steps.push(this.turnResultToStep("rework", result));
+    this.ensureTurnSuccess(result, `第 ${workflow.remediationRound} 次整改实施失败`);
+  }
+
+  private buildWorkflowBasePayload(workflow: TaskWorkflowState): Record<string, unknown> {
     const nextFollowUpAt =
       workflow.nextPollDueAtMs !== undefined ? new Date(workflow.nextPollDueAtMs).toISOString() : undefined;
     const followUpPolicy = {
@@ -2240,6 +2819,13 @@ export class BridgeService {
       active_phase_started_at: workflow.activePhaseStartedAt,
       last_completed_at: workflow.lastCompletedAt,
       workflow_error: workflow.lastError,
+      delivery_test_passed: workflow.deliveryTestPassed ?? false,
+      delivery_test_result: workflow.deliveryTestResult,
+      delivery_test_failures: workflow.deliveryTestFailures,
+      remediation_round: workflow.remediationRound,
+      max_remediation_rounds: MAX_REMEDIATION_ROUNDS,
+      pending_remediation_plan: workflow.pendingRemediationPlan,
+      last_implementation_result: workflow.lastImplementationResult,
       poll_policy: {
         interval_seconds: Math.floor(workflow.pollIntervalMs / 1000),
         interval_min_seconds: Math.floor(workflow.pollIntervalMinMs / 1000),
@@ -2255,6 +2841,11 @@ export class BridgeService {
       phase_gates: this.toPhaseGatesPayload(workflow),
       steps: workflow.steps
     };
+    return base;
+  }
+
+  private buildWorkflowStatusResponse(workflow: TaskWorkflowState): Record<string, unknown> {
+    const base = this.buildWorkflowBasePayload(workflow);
 
     if (workflow.stage === "RUNNING_DESIGN") {
       return {
@@ -2291,7 +2882,63 @@ export class BridgeService {
         next_action_required: ["status"]
       };
     }
+    if (workflow.stage === "NEEDS_DELIVERY_TEST") {
+      return {
+        ...base,
+        current_stage: "DELIVERY_TEST_REQUIRED",
+        workflow_status: "NEEDS_DELIVERY_TEST",
+        business_stage: "等待交付测试",
+        user_message: "计划实施已经完成，但还不能判定交付完成。现在必须从真实业务入口执行交付测试。",
+        next_business_action: "执行真实业务交付测试，并反馈通过或失败",
+        next_action_required: ["delivery_test_pass", "delivery_test_fail"]
+      };
+    }
+    if (workflow.stage === "DELIVERY_TEST_FAILED") {
+      return {
+        ...base,
+        current_stage: "REMEDIATION_REVIEW",
+        workflow_status: "DELIVERY_TEST_FAILED",
+        business_stage: "整改方案确认",
+        user_message: "交付测试失败，当前不能声明完成。请审核整改方案和整改计划，确认后进入当前整改实施。",
+        next_business_action: "确认整改方案和整改计划，或选择主会话接手",
+        next_action_required: ["remediation_approve", "handoff_to_main"]
+      };
+    }
+    if (workflow.stage === "RUNNING_REMEDIATION") {
+      return {
+        ...base,
+        current_stage: "REMEDIATION_RUNNING",
+        workflow_status: "RUNNING_REMEDIATION",
+        business_stage: "整改实施",
+        user_message: "已进入整改实施阶段，我会按 1-2 分钟节奏持续跟进整改进展。",
+        next_action_required: ["status"]
+      };
+    }
+    if (workflow.stage === "NEEDS_REMEDIATION_DECISION") {
+      return {
+        ...base,
+        current_stage: "NEEDS_REMEDIATION_DECISION",
+        workflow_status: "NEEDS_REMEDIATION_DECISION",
+        business_stage: "整改决策",
+        user_message:
+          "已经完成 3 次整改，交付测试仍未通过。后续不能继续由 ACP 自动整改，请选择主会话接手整改，或取消后续工作。",
+        next_action_required: ["handoff_to_main", "cancel_follow_up"],
+        user_options: [
+          {
+            action: "handoff_to_main",
+            description: "主会话接手整改：停止 ACP 自动整改，由主会话负责后续处理"
+          },
+          {
+            action: "cancel_follow_up",
+            description: "取消后续工作：关闭 ACP 会话，本次任务不声明交付完成"
+          }
+        ]
+      };
+    }
     if (workflow.stage === "NEEDS_USER_DECISION") {
+      if (this.restoredWorkflowCannotStream(workflow)) {
+        return this.buildRestoredWorkflowDecisionResponse(workflow);
+      }
       return {
         ...base,
         current_stage: "NEEDS_USER_DECISION",
@@ -2313,6 +2960,17 @@ export class BridgeService {
         ...base,
         current_stage: "TRANSFERRED_TO_MAIN",
         workflow_status: "TRANSFERRED_TO_MAIN",
+        next_action_required: null
+      };
+    }
+    if (workflow.stage === "CANCELLED") {
+      return {
+        ...base,
+        current_stage: "CANCELLED",
+        workflow_status: "CANCELLED",
+        business_stage: "后续工作已取消",
+        user_message: "已取消后续工作。本次任务未通过真实业务交付测试，不能声明交付完成。",
+        workflow_completed: false,
         next_action_required: null
       };
     }
@@ -2731,6 +3389,54 @@ export class BridgeService {
       `验收标准：${acceptance}`,
       "若已达到可交付状态，最后一行输出：STATUS: DONE",
       "否则最后一行输出：STATUS: REWORK_NEEDED"
+    ].join("\n");
+  }
+
+  private buildRemediationPlanPrompt(workflow: TaskWorkflowState, failureText: string): string {
+    const acceptance = workflow.acceptanceCriteria?.trim() ? workflow.acceptanceCriteria.trim() : "无额外验收标准";
+    return [
+      "交付测试失败，当前不能声明完成。",
+      "请基于失败材料形成整改方案和整改计划，输出必须包含：",
+      "1) 失败事实摘要",
+      "2) 根因假设",
+      "3) 整改方案",
+      "4) 整改实施计划",
+      "5) 同一条业务交付测试复测方式",
+      "",
+      `当前整改轮次：${workflow.remediationRound + 1}/${MAX_REMEDIATION_ROUNDS}`,
+      `验收标准：${acceptance}`,
+      "",
+      "失败材料：",
+      failureText,
+      "",
+      "最后一行请输出：STATUS: PLAN_READY"
+    ].join("\n");
+  }
+
+  private buildRemediationImplementationPrompt(
+    workflow: TaskWorkflowState,
+    feedbackText: string | undefined
+  ): string {
+    const acceptance = workflow.acceptanceCriteria?.trim() ? workflow.acceptanceCriteria.trim() : "无额外验收标准";
+    const userFeedback = feedbackText?.trim() ? feedbackText.trim() : "用户已确认按当前整改方案和计划执行。";
+    return [
+      `你正在执行第 ${workflow.remediationRound}/${MAX_REMEDIATION_ROUNDS} 次交付整改。`,
+      "请严格按照当前整改方案和整改计划实施，不要扩大范围。",
+      "输出内容必须包含：",
+      "1) 本次整改完成事项",
+      "2) 关键修改说明",
+      "3) 自测结果与剩余风险",
+      "4) 需要主会话重新执行的同一条业务交付测试",
+      "",
+      `验收标准：${acceptance}`,
+      "",
+      "整改方案和计划：",
+      workflow.pendingRemediationPlan ?? "未记录整改方案和计划，请基于最近失败材料实施最小整改。",
+      "",
+      "用户确认或补充要求：",
+      userFeedback,
+      "",
+      "最后一行请输出：STATUS: DONE"
     ].join("\n");
   }
 

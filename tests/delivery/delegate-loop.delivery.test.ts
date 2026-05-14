@@ -81,5 +81,49 @@ describe("DS-01~DS-03 delivery contracts", () => {
       action: "handoff_to_main"
     });
     expect(handoff.action).toBe("handoff_to_main");
+
+    const deliveryPass = ExecuteTaskSchema.parse({
+      workspace_path: "D:/repo/demo",
+      requirement_text: "需求",
+      session_alias: "delegate-task-001",
+      action: "delivery_test_pass",
+      feedback_text: "真实业务交付测试通过"
+    });
+    expect(deliveryPass.action).toBe("delivery_test_pass");
+
+    const deliveryFail = ExecuteTaskSchema.parse({
+      workspace_path: "D:/repo/demo",
+      requirement_text: "需求",
+      session_alias: "delegate-task-001",
+      action: "delivery_test_fail",
+      feedback_text: "失败位置：CLI 输出；实际表现：直接完成；预期表现：等待交付测试"
+    });
+    expect(deliveryFail.action).toBe("delivery_test_fail");
+
+    expect(() =>
+      ExecuteTaskSchema.parse({
+        workspace_path: "D:/repo/demo",
+        requirement_text: "需求",
+        session_alias: "delegate-task-001",
+        action: "delivery_test_fail"
+      })
+    ).toThrow();
+
+    const remediationApprove = ExecuteTaskSchema.parse({
+      workspace_path: "D:/repo/demo",
+      requirement_text: "需求",
+      session_alias: "delegate-task-001",
+      action: "remediation_approve",
+      feedback_text: "确认按整改方案执行"
+    });
+    expect(remediationApprove.action).toBe("remediation_approve");
+
+    const cancelFollowUp = ExecuteTaskSchema.parse({
+      workspace_path: "D:/repo/demo",
+      requirement_text: "需求",
+      session_alias: "delegate-task-001",
+      action: "cancel_follow_up"
+    });
+    expect(cancelFollowUp.action).toBe("cancel_follow_up");
   });
 });

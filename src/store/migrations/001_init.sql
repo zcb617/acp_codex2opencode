@@ -48,6 +48,21 @@ CREATE TABLE IF NOT EXISTS delegate_events (
 CREATE INDEX IF NOT EXISTS idx_delegate_events_turn_seq
 ON delegate_events (turn_id, event_seq);
 
+CREATE TABLE IF NOT EXISTS delegate_workflows (
+  workflow_key TEXT PRIMARY KEY,
+  workspace_path TEXT NOT NULL,
+  session_alias TEXT NOT NULL,
+  bridge_session_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (workspace_path, session_alias)
+);
+
+CREATE INDEX IF NOT EXISTS idx_delegate_workflows_session
+ON delegate_workflows (bridge_session_id);
+
 CREATE TABLE IF NOT EXISTS delegate_audit_logs (
   audit_id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL,

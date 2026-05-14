@@ -60,6 +60,10 @@ description: Use only when the user explicitly asks for delegation workflow/team
 6. **一切推进看返回状态，但对用户表达必须看业务语义。** 下一步只允许执行 `next_action_required` 里的动作；对用户说明时优先使用 `business_stage` / `user_message` / `next_business_action`。
 7. **不要主动传短超时。** 正常业务流程不要传 `timeout_ms`；除非用户明确要求限制等待时间，否则让插件使用安装时配置的长轮次超时。
 8. **实施阶段必须满足 1-2 分钟持续跟进节奏。** 这个节奏是硬性流程要求，不是可选项；未到下一次持续跟进时间，禁止提前向用户输出暂无进展。
+9. **实施完成不等于交付完成。** 计划实施完成后必须进入真实业务交付测试；只有交付测试通过后，才能向用户声明完成。
+10. **交付测试失败必须闭环整改。** 失败后必须提交失败材料，形成整改方案和整改计划，确认后整改实施，并回到同一条业务交付测试链路。
+11. **ACP 整改次数固定为 3 次。** 整改次数由插件状态机控制，不能由 LLM 或调用参数决定；完成 3 次整改后仍未通过，只能由主会话接手整改或取消后续工作。
+12. **插件没有给继续等待选项时必须停步。** 如果 `next_action_required` 不包含 `continue_wait`，必须停止持续跟进，输出 `user_message` 和 `next_business_action`，等待用户选择插件给出的下一步。
 
 ## 执行流程
 
@@ -74,7 +78,9 @@ digraph team_delegate_flow {
   "NEEDS_MAIN_DESIGN / NEEDS_MAIN_PLANNING" [shape=box];
   "RUNNING_*" [shape=box];
   "WAITING_*_APPROVAL" [shape=box];
-  "COMPLETED / FAILED / TRANSFERRED_TO_MAIN" [shape=doublecircle];
+  "NEEDS_DELIVERY_TEST / DELIVERY_TEST_FAILED" [shape=box];
+  "RUNNING_REMEDIATION / NEEDS_REMEDIATION_DECISION" [shape=box];
+  "COMPLETED / FAILED / TRANSFERRED_TO_MAIN / CANCELLED" [shape=doublecircle];
 
   "Skill Triggered" -> "Judge start phase in main dialog";
   "Judge start phase in main dialog" -> "Call delegate.task.execute(start)";
@@ -84,7 +90,9 @@ digraph team_delegate_flow {
   "Read workflow_status" -> "NEEDS_MAIN_DESIGN / NEEDS_MAIN_PLANNING";
   "Read workflow_status" -> "RUNNING_*";
   "Read workflow_status" -> "WAITING_*_APPROVAL";
-  "Read workflow_status" -> "COMPLETED / FAILED / TRANSFERRED_TO_MAIN";
+  "Read workflow_status" -> "NEEDS_DELIVERY_TEST / DELIVERY_TEST_FAILED";
+  "Read workflow_status" -> "RUNNING_REMEDIATION / NEEDS_REMEDIATION_DECISION";
+  "Read workflow_status" -> "COMPLETED / FAILED / TRANSFERRED_TO_MAIN / CANCELLED";
 }
 ```
 
@@ -125,6 +133,7 @@ digraph team_delegate_flow {
    - `continue_wait`
    - `handoff_to_main`
 5. 用户选择 `continue_wait` 后，进入新的持续跟进周期；等待过程中只要 ACP 又输出内容，就恢复进展总结并清空旧的接手询问。
+6. 如果 `NEEDS_USER_DECISION` 返回后，`next_action_required` 里没有 `continue_wait`，代表当前任务已经不能继续等待；必须停止持续跟进，禁止继续调用 `status`，并立刻输出 `user_message`，让用户选择插件给出的下一步。
 
 ### 5) `WAITING_DESIGN_APPROVAL`
 
@@ -135,12 +144,40 @@ digraph team_delegate_flow {
 
 1. 用户反馈 -> `planning_feedback`
 2. 用户批准 -> `planning_approve`
+3. `planning_approve` 后只代表进入计划实施；实施完成后仍必须等待真实业务交付测试。
 
-### 7) 终态
+### 7) `NEEDS_DELIVERY_TEST`
+
+1. 先告诉用户：计划实施已经完成，但还不能判定交付完成。
+2. 主会话必须从真实业务入口执行交付测试。
+3. 测试通过调用 `delivery_test_pass`，可在 `feedback_text` 中记录通过材料。
+4. 测试失败调用 `delivery_test_fail`，必须在 `feedback_text` 中提供失败位置、用户输入、实际表现、预期表现、复现步骤。
+5. 不允许用单元测试、字段检查或 ACP 自述完成代替真实业务交付测试。
+
+### 8) `DELIVERY_TEST_FAILED`
+
+1. 向用户展示整改方案和整改计划。
+2. 用户确认后调用 `remediation_approve`。
+3. 用户不希望 ACP 继续当前轮整改时调用 `handoff_to_main`，由主会话接手。
+
+### 9) `RUNNING_REMEDIATION`
+
+继续按 1-2 分钟节奏持续跟进整改进展；整改完成后必须重新执行同一条交付测试链路。
+
+### 10) `NEEDS_REMEDIATION_DECISION`
+
+1. 该状态只会在完成 3 次 ACP 整改后仍未通过交付测试时出现。
+2. 必须告诉用户：后续不能继续由 ACP 自动整改。
+3. 只给两个选择：
+   - `handoff_to_main`：主会话接手整改。
+   - `cancel_follow_up`：取消后续工作，本次任务不声明交付完成。
+
+### 11) 终态
 
 1. `COMPLETED`：汇报完成与产出。
 2. `FAILED`：报告错误并给出下一步可执行动作（通常 `status` 或重启流程）。
 3. `TRANSFERRED_TO_MAIN`：确认已取消并关闭 ACP 会话，回到主会话处理。
+4. `CANCELLED`：确认用户取消后续工作，并明确本次任务未通过交付测试，不能声明交付完成。
 
 ## 必用调用模板
 
@@ -159,7 +196,6 @@ digraph team_delegate_flow {
   "start_phase_evidence": ["<判定证据，可选>"],
   "missing_context": ["<仅 need_user_input 时填写，可选>"],
   "acceptance_criteria": "<验收标准，可选>",
-  "max_rework_rounds": 2,
   "auto_close": true
 }
 ```
@@ -220,3 +256,15 @@ digraph team_delegate_flow {
 4. 用户需要做的唯一选择（若有）。
 
 禁止把 `workflow_status` / `current_stage` / `next_action_required` 放在面向用户输出的开头或作为主提示。只有用户要求调试、排障或查看内部状态时，才可以在业务说明之后补充这些字段。
+
+如果 next_action_required 不包含 continue_wait，必须停止持续跟进，输出 user_message，并等待用户选择插件返回的业务动作。
+
+## 继续已委派任务
+
+当用户说“继续某个已委派任务”“继续某个任务名”“我选择继续等待”时：
+
+1. 必须复用用户给出的任务名作为 `session_alias`。
+2. 如果用户明确选择继续等待，优先调用 `action=continue_wait`。
+3. 如果用户只是询问当前进展，调用 `action=status`。
+4. 禁止把继续任务当成新任务重新 `start`，除非插件明确返回找不到流程，且用户确认要重新开始。
+5. 如果误调用 `start` 后插件返回已有流程状态，必须按该状态继续，不得再次要求选择模型。

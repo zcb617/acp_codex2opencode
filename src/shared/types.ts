@@ -53,6 +53,17 @@ export interface DelegateAuditRecord {
   createdAt: string;
 }
 
+export interface DelegateWorkflowRecord {
+  workflowKey: string;
+  workspacePath: string;
+  sessionAlias: string;
+  bridgeSessionId: string;
+  stage: string;
+  snapshot: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;

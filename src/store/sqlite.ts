@@ -7,7 +7,8 @@ import type {
   DelegateAuditRecord,
   DelegateEventRecord,
   DelegateSessionRecord,
-  DelegateTurnRecord
+  DelegateTurnRecord,
+  DelegateWorkflowRecord
 } from "../shared/types.js";
 
 type Db = Database<sqlite3.Database, sqlite3.Statement>;
@@ -49,6 +50,17 @@ interface EventRow {
   event_type: string;
   payload_json: string;
   created_at: string;
+}
+
+interface WorkflowRow {
+  workflow_key: string;
+  workspace_path: string;
+  session_alias: string;
+  bridge_session_id: string;
+  stage: string;
+  snapshot_json: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export class SqliteStore {
@@ -239,6 +251,46 @@ export class SqliteStore {
     }));
   }
 
+  public async saveWorkflow(record: DelegateWorkflowRecord): Promise<void> {
+    await this.mustDb().run(
+      `INSERT INTO delegate_workflows (
+          workflow_key, workspace_path, session_alias, bridge_session_id, stage,
+          snapshot_json, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(workflow_key) DO UPDATE SET
+          workspace_path = excluded.workspace_path,
+          session_alias = excluded.session_alias,
+          bridge_session_id = excluded.bridge_session_id,
+          stage = excluded.stage,
+          snapshot_json = excluded.snapshot_json,
+          updated_at = excluded.updated_at`,
+      [
+        record.workflowKey,
+        record.workspacePath,
+        record.sessionAlias,
+        record.bridgeSessionId,
+        record.stage,
+        JSON.stringify(record.snapshot),
+        record.createdAt,
+        record.updatedAt
+      ]
+    );
+  }
+
+  public async findWorkflowByKey(workflowKey: string): Promise<DelegateWorkflowRecord | undefined> {
+    const row = await this.mustDb().get<WorkflowRow>(
+      `SELECT * FROM delegate_workflows
+       WHERE workflow_key = ?
+       LIMIT 1`,
+      [workflowKey]
+    );
+    return row ? this.mapWorkflowRow(row) : undefined;
+  }
+
+  public async deleteWorkflow(workflowKey: string): Promise<void> {
+    await this.mustDb().run(`DELETE FROM delegate_workflows WHERE workflow_key = ?`, [workflowKey]);
+  }
+
   public async appendAudit(record: DelegateAuditRecord): Promise<void> {
     await this.mustDb().run(
       `INSERT INTO delegate_audit_logs (
@@ -294,6 +346,19 @@ export class SqliteStore {
       usage: row.usage_json ? JSON.parse(row.usage_json) : undefined,
       startedAt: row.started_at ?? undefined,
       endedAt: row.ended_at ?? undefined
+    };
+  }
+
+  private mapWorkflowRow(row: WorkflowRow): DelegateWorkflowRecord {
+    return {
+      workflowKey: row.workflow_key,
+      workspacePath: row.workspace_path,
+      sessionAlias: row.session_alias,
+      bridgeSessionId: row.bridge_session_id,
+      stage: row.stage,
+      snapshot: JSON.parse(row.snapshot_json),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
     };
   }
 

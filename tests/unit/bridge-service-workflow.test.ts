@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createLogger } from "../../src/observability/logger.js";
 import { MetricsRegistry } from "../../src/observability/metrics.js";
 import { BridgeService } from "../../src/session/bridge-service.js";
@@ -45,11 +48,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function mockBridgeService(options?: { workflowSyncWaitMs?: number; turnTimeoutMs?: number }): BridgeService {
+function mockBridgeService(options?: {
+  workflowSyncWaitMs?: number;
+  turnTimeoutMs?: number;
+  stateDir?: string;
+}): BridgeService {
   const service = new BridgeService(
     {
       opencodeBinPath: "opencode",
-      stateDir: "D:/tmp/acp-workflow-test",
+      stateDir: options?.stateDir ?? "D:/tmp/acp-workflow-test",
       turnTimeoutMs: options?.turnTimeoutMs ?? 30_000,
       workflowSyncWaitMs: options?.workflowSyncWaitMs ?? 300
     },
@@ -304,7 +311,7 @@ describe("bridge workflow approvals", () => {
     expect(invalid.error?.code).toBe(ErrorCodes.WORKFLOW_INVALID_TRANSITION);
   });
 
-  it("should complete after design and planning approvals", async () => {
+  it("should require delivery test after design and planning approvals", async () => {
     const service = mockBridgeService();
     await startAndConfirmModel(service, {
       workspace_path: "D:/repo",
@@ -323,19 +330,29 @@ describe("bridge workflow approvals", () => {
     expect(planning.success).toBe(true);
     expect((planning.data as { workflow_status: string }).workflow_status).toBe("WAITING_PLAN_APPROVAL");
 
-    const done = await service.executeTask({
+    const implementationDone = await service.executeTask({
       workspace_path: "D:/repo",
       requirement_text: START_FROM_DESIGN_REQUIREMENT,
       session_alias: "task-002",
       action: "planning_approve"
     });
-    expect(done.success).toBe(true);
-    expect((done.data as { workflow_status: string }).workflow_status).toBe("COMPLETED");
-    expect((done.data as { workflow_completed: boolean }).workflow_completed).toBe(true);
-    expect((done.data as { current_model?: string }).current_model).toBe(
+    expect(implementationDone.success).toBe(true);
+    expect((implementationDone.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((implementationDone.data as { current_model?: string }).current_model).toBe(
       "llm-router-openai-compatible/kimi-for-roo"
     );
-    expect((done.data as { current_agent_mode?: string }).current_agent_mode).toBe("build");
+    expect((implementationDone.data as { current_agent_mode?: string }).current_agent_mode).toBe("build");
+
+    const delivered = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002",
+      action: "delivery_test_pass",
+      feedback_text: "真实业务交付测试通过"
+    });
+    expect(delivered.success).toBe(true);
+    expect((delivered.data as { workflow_status: string }).workflow_status).toBe("COMPLETED");
+    expect((delivered.data as { workflow_completed: boolean }).workflow_completed).toBe(true);
   });
 
   it("should not let a short action timeout kill delegated implementation turns", async () => {
@@ -362,7 +379,7 @@ describe("bridge workflow approvals", () => {
     });
 
     expect(done.success).toBe(true);
-    expect((done.data as { workflow_status: string }).workflow_status).toBe("COMPLETED");
+    expect((done.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
     const executeTurn = (service as unknown as { executeTurn: ReturnType<typeof vi.fn> }).executeTurn;
     const implementationCall = executeTurn.mock.calls.find((call) => call[2]?.includes("implementation"));
     expect(implementationCall?.[4]).toBe(86_400_000);
@@ -470,6 +487,66 @@ describe("bridge workflow approvals", () => {
     });
     expect(handoff.success).toBe(true);
     expect((handoff.data as { workflow_status: string }).workflow_status).toBe("TRANSFERRED_TO_MAIN");
+  });
+
+  it("should restore a waiting workflow after the plugin process restarts", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "acp-workflow-recovery-"));
+    const service = mockBridgeService({ workflowSyncWaitMs: 5, stateDir });
+    await service.init();
+    const hacked = service as unknown as Record<string, unknown>;
+    let releaseDesign!: () => void;
+    hacked.runDesignPhase = vi.fn(
+      async (workflow: Record<string, unknown>) =>
+        new Promise<void>((resolve) => {
+          releaseDesign = () => {
+            workflow.stage = "WAITING_DESIGN_APPROVAL";
+            resolve();
+          };
+        })
+    );
+
+    const start = await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-recover-waiting",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-recover-waiting");
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 1_000;
+    workflow!.lastProgressAtMs = Date.now() - 10_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const decision = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-recover-waiting",
+      action: "status"
+    });
+    expect(decision.success).toBe(true);
+    expect((decision.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_DECISION");
+
+    const restoredService = mockBridgeService({ workflowSyncWaitMs: 5, stateDir });
+    await restoredService.init();
+    const continued = await restoredService.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-recover-waiting",
+      action: "continue_wait"
+    });
+
+    releaseDesign();
+    await service.shutdown();
+    await restoredService.shutdown();
+
+    expect(continued.success).toBe(true);
+    expect((continued.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_DECISION");
+    expect((continued.data as { user_message: string }).user_message).toContain("委派执行端无法继续回传");
   });
 
   it("should keep waiting and return progress when ACP emits output before silence timeout", async () => {
@@ -750,7 +827,268 @@ describe("bridge workflow approvals", () => {
     });
     expect(start.success).toBe(true);
     expect((start.data as { detected_start_phase: string }).detected_start_phase).toBe("implementation");
-    expect((start.data as { workflow_status: string }).workflow_status).toBe("COMPLETED");
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((start.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "delivery_test_pass",
+      "delivery_test_fail"
+    ]);
+    expect((start.data as { user_message: string }).user_message).toContain("还不能判定交付完成");
+  });
+
+  it("should complete only after delivery test passes", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 500 });
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-delivery-pass",
+      start_phase: "implementation"
+    });
+
+    const passed = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-delivery-pass",
+      action: "delivery_test_pass",
+      feedback_text: "真实业务交付测试通过"
+    });
+
+    expect(passed.success).toBe(true);
+    expect((passed.data as { workflow_status: string }).workflow_status).toBe("COMPLETED");
+    expect((passed.data as { delivery_test_passed: boolean }).delivery_test_passed).toBe(true);
+  });
+
+  it("should create remediation review after delivery test fails", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 500 });
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-delivery-fail",
+      start_phase: "implementation"
+    });
+
+    const failed = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-delivery-fail",
+      action: "delivery_test_fail",
+      feedback_text: "失败位置：CLI；实际表现：直接完成；预期表现：等待交付测试"
+    });
+
+    expect(failed.success).toBe(true);
+    expect((failed.data as { workflow_status: string }).workflow_status).toBe("DELIVERY_TEST_FAILED");
+    expect((failed.data as { next_action_required: string[] }).next_action_required).toContain(
+      "remediation_approve"
+    );
+  });
+
+  it("should return to delivery test after remediation completes", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 500 });
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-remediation-return",
+      start_phase: "implementation"
+    });
+
+    await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-return",
+      action: "delivery_test_fail",
+      feedback_text: "失败位置：CLI；实际表现：直接完成；预期表现：等待交付测试"
+    });
+
+    const remediation = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-return",
+      action: "remediation_approve",
+      feedback_text: "确认整改"
+    });
+
+    expect(remediation.success).toBe(true);
+    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+  });
+
+  it("should ask user to decide only after three remediation rounds fail", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 500 });
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-remediation-limit",
+      start_phase: "implementation"
+    });
+
+    const firstFailure = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-limit",
+      action: "delivery_test_fail",
+      feedback_text: "首次交付测试失败"
+    });
+    expect((firstFailure.data as { workflow_status: string }).workflow_status).toBe("DELIVERY_TEST_FAILED");
+
+    for (const round of [1, 2, 3]) {
+      const remediation = await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: "需求",
+        session_alias: "task-remediation-limit",
+        action: "remediation_approve",
+        feedback_text: `确认第 ${round} 次整改`
+      });
+      expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+
+      const failedAgain = await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: "需求",
+        session_alias: "task-remediation-limit",
+        action: "delivery_test_fail",
+        feedback_text: `第 ${round} 次整改后仍失败`
+      });
+
+      expect(failedAgain.success).toBe(true);
+      if (round < 3) {
+        expect((failedAgain.data as { workflow_status: string }).workflow_status).toBe("DELIVERY_TEST_FAILED");
+      } else {
+        expect((failedAgain.data as { workflow_status: string }).workflow_status).toBe(
+          "NEEDS_REMEDIATION_DECISION"
+        );
+        expect((failedAgain.data as { next_action_required: string[] }).next_action_required).toEqual([
+          "handoff_to_main",
+          "cancel_follow_up"
+        ]);
+      }
+    }
+  });
+
+  it("should cancel follow-up work without marking delivery as completed", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 500 });
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-remediation-cancel",
+      start_phase: "implementation"
+    });
+
+    await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-cancel",
+      action: "delivery_test_fail",
+      feedback_text: "首次交付测试失败"
+    });
+
+    for (const round of [1, 2, 3]) {
+      await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: "需求",
+        session_alias: "task-remediation-cancel",
+        action: "remediation_approve",
+        feedback_text: `确认第 ${round} 次整改`
+      });
+      await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: "需求",
+        session_alias: "task-remediation-cancel",
+        action: "delivery_test_fail",
+        feedback_text: `第 ${round} 次整改后仍失败`
+      });
+    }
+
+    const cancelled = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-cancel",
+      action: "cancel_follow_up"
+    });
+
+    expect(cancelled.success).toBe(true);
+    expect((cancelled.data as { workflow_status: string }).workflow_status).toBe("CANCELLED");
+    expect((cancelled.data as { workflow_completed: boolean }).workflow_completed).toBe(false);
+  });
+
+  it("should restore remediation decision after restart and allow cancelling follow-up", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "acp-remediation-recovery-"));
+    const service = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await service.init();
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-remediation-restore",
+      start_phase: "implementation"
+    });
+
+    await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-restore",
+      action: "delivery_test_fail",
+      feedback_text: "首次交付测试失败"
+    });
+
+    for (const round of [1, 2, 3]) {
+      await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: "需求",
+        session_alias: "task-remediation-restore",
+        action: "remediation_approve",
+        feedback_text: `确认第 ${round} 次整改`
+      });
+      const failedAgain = await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: "需求",
+        session_alias: "task-remediation-restore",
+        action: "delivery_test_fail",
+        feedback_text: `第 ${round} 次整改后仍失败`
+      });
+      expect(failedAgain.success).toBe(true);
+    }
+    await service.shutdown();
+
+    const restoredService = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await restoredService.init();
+    const cancelled = await restoredService.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-restore",
+      action: "cancel_follow_up"
+    });
+    await restoredService.shutdown();
+
+    expect(cancelled.success).toBe(true);
+    expect((cancelled.data as { workflow_status: string }).workflow_status).toBe("CANCELLED");
+    expect((cancelled.data as { workflow_completed: boolean }).workflow_completed).toBe(false);
+  });
+
+  it("should restore an existing workflow when start is called with the same alias after restart", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "acp-start-recovery-"));
+    const service = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await service.init();
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-start-restore",
+      start_phase: "implementation"
+    });
+    await service.shutdown();
+
+    const restoredService = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await restoredService.init();
+    const startAgain = await restoredService.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-start-restore",
+      action: "start",
+      start_phase: "implementation"
+    });
+    await restoredService.shutdown();
+
+    expect(startAgain.success).toBe(true);
+    expect((startAgain.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((startAgain.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "delivery_test_pass",
+      "delivery_test_fail"
+    ]);
   });
 
   it("should default to main-session design execution when start phase is design", async () => {

@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     "delegate.task.execute",
     {
       description:
-        "高层委派入口：每次 start 前先走模型选择流程（历史模型确认或重新选择）；确认模型后主对话传入起始阶段（design/planning/implementation/need_user_input）；Design/Planning 默认主会话执行（可切换 ACP），Implementation 直接委派 ACP；信息不足返回 NEEDS_USER_INPUT；status 查询阶段执行进度；长期运行返回 continue_wait/handoff_to_main 选项",
+        "高层委派入口：按业务阶段推进方案、计划、实施、交付测试和整改闭环；实施完成后必须等待真实业务交付测试，通过后才完成，失败后进入整改方案、整改计划、整改实施和复测。返回 next_action_required 不包含 continue_wait 时，必须停止持续跟进并向用户输出 user_message。",
       inputSchema: z.object({
         workspace_path: z.string(),
         requirement_text: z.string(),
@@ -99,7 +99,11 @@ async function main(): Promise<void> {
             "design_feedback",
             "design_approve",
             "planning_feedback",
-            "planning_approve"
+            "planning_approve",
+            "delivery_test_pass",
+            "delivery_test_fail",
+            "remediation_approve",
+            "cancel_follow_up"
           ])
           .optional(),
         feedback_text: z.string().optional(),

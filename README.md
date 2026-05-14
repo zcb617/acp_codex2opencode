@@ -37,17 +37,35 @@
 6. `action=design_feedback`：按反馈修订 Design（仍停在待确认）
 7. `action=design_approve`：进入 Planning 文档产出（停在待确认）
 8. `action=planning_feedback`：按反馈修订 Planning（仍停在待确认）
-9. `action=planning_approve`：进入开发与整改循环，完成后可自动关闭会话
+9. `action=planning_approve`：进入计划实施；实施完成后进入真实业务交付测试等待节点，不直接判定完成
 10. `action=continue_wait`：当返回 `NEEDS_USER_DECISION` 时，继续新的持续跟进周期
 11. `action=handoff_to_main`：当返回 `NEEDS_USER_DECISION` 时，转交主会话（自动取消并关闭 ACP 会话）
+12. `action=delivery_test_pass`：主会话已完成真实业务交付测试且测试通过，插件进入完成状态
+13. `action=delivery_test_fail`：主会话已完成真实业务交付测试但测试失败，必须提供失败材料，插件进入整改闭环
+14. `action=remediation_approve`：用户确认整改方案和整改计划后，进入当前整改实施
+15. `action=cancel_follow_up`：完成 3 次整改后仍未通过时，用户取消后续工作，本次任务不声明交付完成
 
 返回结果会包含：
 
-- `workflow_status`：`NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION` / `NEEDS_USER_INPUT` / `NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING` / `RUNNING_DESIGN` / `WAITING_DESIGN_APPROVAL` / `RUNNING_PLANNING` / `WAITING_PLAN_APPROVAL` / `RUNNING_IMPLEMENTATION` / `NEEDS_USER_DECISION` / `TRANSFERRED_TO_MAIN` / `COMPLETED` / `FAILED`
+- `workflow_status`：`NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION` / `NEEDS_USER_INPUT` / `NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING` / `RUNNING_DESIGN` / `WAITING_DESIGN_APPROVAL` / `RUNNING_PLANNING` / `WAITING_PLAN_APPROVAL` / `RUNNING_IMPLEMENTATION` / `NEEDS_DELIVERY_TEST` / `DELIVERY_TEST_FAILED` / `RUNNING_REMEDIATION` / `NEEDS_REMEDIATION_DECISION` / `NEEDS_USER_DECISION` / `TRANSFERRED_TO_MAIN` / `CANCELLED` / `COMPLETED` / `FAILED`
 - `next_action_required`：下一步可执行动作
 - `current_model`：当前使用中的模型
 - `follow_up_policy`：当前持续跟进节奏（60-120 秒范围、5 分钟无新进展决策条件、下一次持续跟进时间）
 - `progress_update`：ACP 新输出增量；主会话应将其总结成简短中文进展，不直接粘贴完整原始过程
+
+## 业务交付闭环
+
+ACP 实施完成只代表代码实施阶段结束，不代表任务已经交付。插件会在实施完成后进入 `NEEDS_DELIVERY_TEST`，要求主会话从真实业务入口执行交付测试。
+
+闭环规则：
+
+1. 只有主会话确认真实业务交付测试通过，并调用 `delivery_test_pass` 后，插件才进入 `COMPLETED`。
+2. 如果交付测试失败，主会话必须调用 `delivery_test_fail` 并提供失败位置、用户输入、实际表现、预期表现和复现步骤。
+3. 插件会形成整改方案和整改计划，等待用户确认后进入整改实施。
+4. 整改完成后必须回到同一条真实业务交付测试链路。
+5. ACP 整改次数固定为 3 次，由插件状态机控制，不由 LLM 或调用参数决定。
+6. 完成 3 次整改后仍未通过时，用户只能选择主会话接手整改或取消后续工作。
+7. 用户取消后续工作时，插件进入 `CANCELLED`，不会声明交付完成。
 
 最小前置动作：
 

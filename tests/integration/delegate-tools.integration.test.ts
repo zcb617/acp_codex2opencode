@@ -36,5 +36,31 @@ describe("delegate tools integration", () => {
       })
     );
     expect((execute as { success: boolean }).success).toBe(true);
+
+    await tools.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "实现一个功能",
+      session_alias: "task-001",
+      action: "delivery_test_pass",
+      feedback_text: "真实业务交付测试通过"
+    });
+    expect(service.executeTask).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        action: "delivery_test_pass",
+        feedback_text: "真实业务交付测试通过"
+      })
+    );
+
+    await tools.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "实现一个功能",
+      session_alias: "task-001",
+      action: "cancel_follow_up"
+    });
+    expect(service.executeTask).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        action: "cancel_follow_up"
+      })
+    );
   });
 });

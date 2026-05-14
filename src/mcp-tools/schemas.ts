@@ -64,7 +64,11 @@ export const ExecuteTaskSchema = z.object({
       "design_feedback",
       "design_approve",
       "planning_feedback",
-      "planning_approve"
+      "planning_approve",
+      "delivery_test_pass",
+      "delivery_test_fail",
+      "remediation_approve",
+      "cancel_follow_up"
     ])
     .optional(),
   feedback_text: z.string().min(1).optional(),
@@ -88,6 +92,13 @@ export const ExecuteTaskSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["feedback_text"],
       message: "反馈动作必须提供 feedback_text"
+    });
+  }
+  if (action === "delivery_test_fail" && !value.feedback_text?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["feedback_text"],
+      message: "交付测试失败时必须提供失败材料"
     });
   }
   if (action === "model_confirm" && !value.model_confirm_choice) {
