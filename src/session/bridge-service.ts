@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type { MetricsRegistry } from "../observability/metrics.js";
 import type { Logger } from "../observability/logger.js";
 import { AcpProcessSupervisor } from "../process/acp-process-supervisor.js";
@@ -349,6 +351,14 @@ const BUGFIX_PLANNING_REQUIRED_SECTIONS = [
 
 const TEAM_DELEGATE_SKILL_NAME = "team-delegate";
 const TEAM_DELEGATE_SKILL_DOCS_DIR = join(homedir(), ".codex", "skills", TEAM_DELEGATE_SKILL_NAME, "docs");
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const PACKAGE_SKILL_DOCS_DIR = join(PACKAGE_ROOT, "skills", TEAM_DELEGATE_SKILL_NAME, "docs");
+
+interface SkillGuideDocument {
+  path: string;
+  relativePath: string;
+  content: string;
+}
 
 function toSkillGuideRelativePath(fileName: string): string {
   return `docs/${fileName}`;
@@ -356,6 +366,50 @@ function toSkillGuideRelativePath(fileName: string): string {
 
 function toInstalledSkillGuidePath(fileName: string): string {
   return join(TEAM_DELEGATE_SKILL_DOCS_DIR, fileName);
+}
+
+function readSkillGuideDocument(fileName: string): SkillGuideDocument {
+  const relativePath = toSkillGuideRelativePath(fileName);
+  const candidatePaths = Array.from(
+    new Set([toInstalledSkillGuidePath(fileName), join(PACKAGE_SKILL_DOCS_DIR, fileName)])
+  );
+  const failures: string[] = [];
+
+  for (const candidatePath of candidatePaths) {
+    try {
+      const content = readFileSync(candidatePath, "utf8").trim();
+      if (content.length === 0) {
+        failures.push(`${candidatePath}: 文档为空`);
+        continue;
+      }
+      return {
+        path: candidatePath,
+        relativePath,
+        content
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push(`${candidatePath}: ${message}`);
+    }
+  }
+
+  throw new BridgeError(
+    ErrorCodes.CONFIG_VALUE_INVALID,
+    `无法读取 ${TEAM_DELEGATE_SKILL_NAME} 插件指南文档 ${relativePath}。已尝试: ${failures.join(" | ")}`,
+    false
+  );
+}
+
+function buildGuideDocumentPromptBlock(guide: SkillGuideDocument): string[] {
+  return [
+    "插件 skill 自带指南文档全文如下。该指南来自 team-delegate skill 自带 docs，不来自用户项目目录。",
+    `指南文档：${guide.path}`,
+    `指南相对路径（相对 ${TEAM_DELEGATE_SKILL_NAME} skill 根目录）：${guide.relativePath}`,
+    "=== 指南全文开始 ===",
+    guide.content,
+    "=== 指南全文结束 ===",
+    "你必须按照上方指南全文的要求编写，不允许只按章节名编写，不允许忽略指南中的完成标准、禁止写法、验证要求和交付测试要求。"
+  ];
 }
 
 const DOCUMENT_PROFILES: Record<
@@ -3450,14 +3504,12 @@ export class BridgeService {
   ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
     const profile = DOCUMENT_PROFILES[developmentType];
-    const guidePath = toInstalledSkillGuidePath(profile.designGuideFile);
-    const guideRelativePath = toSkillGuideRelativePath(profile.designGuideFile);
+    const guide = readSkillGuideDocument(profile.designGuideFile);
     return [
       "你是团队中的架构设计负责人。",
       `当前开发类型是${profile.label}。`,
-      "当前阶段是 Design，必须先读取插件 skill 自带指南文档，再严格遵循该文档。",
-      `指南文档：${guidePath}`,
-      `指南相对路径（相对 ${TEAM_DELEGATE_SKILL_NAME} skill 根目录）：${guideRelativePath}`,
+      "当前阶段是 Design。插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容编写。",
+      ...buildGuideDocumentPromptBlock(guide),
       "请输出一份可执行规范文档，必须按以下章节顺序给出，并使用 markdown 二级标题：",
       ...profile.designRequiredSections.map((section) => `## ${section}`),
       "",
@@ -3466,7 +3518,7 @@ export class BridgeService {
       "2) 每个关键要求必须可验证。",
       "3) 每个关键流程必须有失败回退路径。",
       "4) 不得省略上述任一章节。",
-      "5) 除读取上述指南文档外，本阶段禁止执行其他工具调用；读取指南后直接输出设计文档。",
+      "5) 指南全文已经在本提示词中提供，本阶段禁止执行工具调用；直接输出设计文档。",
       "6) 禁止读取用户项目目录下的 docs 或 docs/superpowers 作为本阶段指南。",
       "",
       "需求如下：",
@@ -3484,14 +3536,12 @@ export class BridgeService {
   ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
     const profile = DOCUMENT_PROFILES[developmentType];
-    const guidePath = toInstalledSkillGuidePath(profile.planningGuideFile);
-    const guideRelativePath = toSkillGuideRelativePath(profile.planningGuideFile);
+    const guide = readSkillGuideDocument(profile.planningGuideFile);
     return [
       "你是团队中的实施计划负责人。",
       `当前开发类型是${profile.label}。`,
-      "当前阶段是 Planning，必须先读取插件 skill 自带指南文档，再严格遵循该文档。",
-      `指南文档：${guidePath}`,
-      `指南相对路径（相对 ${TEAM_DELEGATE_SKILL_NAME} skill 根目录）：${guideRelativePath}`,
+      "当前阶段是 Planning。插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容编写。",
+      ...buildGuideDocumentPromptBlock(guide),
       "请输出一份完整计划，必须按以下章节顺序给出，并使用 markdown 二级标题：",
       ...profile.planningRequiredSections.map((section) => `## ${section}`),
       "",
@@ -3500,7 +3550,7 @@ export class BridgeService {
       "2) 必须包含业务场景、Task 拆分和验证命令。",
       "3) 必须定义失败修复与复测闭环。",
       "4) 不得省略上述任一章节。",
-      "5) 除读取上述指南文档外，本阶段禁止执行其他工具调用；读取指南后直接输出计划文档。",
+      "5) 指南全文已经在本提示词中提供，本阶段禁止执行工具调用；直接输出计划文档。",
       "6) 禁止读取用户项目目录下的 docs 或 docs/superpowers 作为本阶段指南。",
       "",
       "需求如下：",
@@ -3519,10 +3569,11 @@ export class BridgeService {
   ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
     const profile = DOCUMENT_PROFILES[developmentType];
-    const guidePath = toInstalledSkillGuidePath(profile.designGuideFile);
+    const guide = readSkillGuideDocument(profile.designGuideFile);
     return [
       `Design 门禁未通过，正在执行第 ${round} 轮补全。`,
-      `当前开发类型是${profile.label}，必须继续读取并遵循插件 skill 自带指南文档：${guidePath}`,
+      `当前开发类型是${profile.label}，插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容补全文档。`,
+      ...buildGuideDocumentPromptBlock(guide),
       "请仅补齐缺失章节并输出完整设计文档，章节顺序保持不变。",
       `缺失章节：${missingSections.join("、")}`,
       "",
@@ -3538,11 +3589,12 @@ export class BridgeService {
   ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
     const profile = DOCUMENT_PROFILES[developmentType];
-    const guidePath = toInstalledSkillGuidePath(profile.designGuideFile);
+    const guide = readSkillGuideDocument(profile.designGuideFile);
     return [
       "用户对 Design 阶段提出了反馈，请在保留结构化章节的前提下完成修订，并输出完整文档。",
-      `当前开发类型是${profile.label}，必须继续读取并遵循插件 skill 自带指南文档：${guidePath}`,
-      "除读取上述指南文档外，禁止执行其他工具调用；读取指南后直接输出修订后的文档。",
+      `当前开发类型是${profile.label}，插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容修订文档。`,
+      ...buildGuideDocumentPromptBlock(guide),
+      "指南全文已经在本提示词中提供，禁止执行工具调用；直接输出修订后的文档。",
       `用户反馈：${feedback}`,
       "",
       `验收标准：${acceptance}`,
@@ -3558,10 +3610,11 @@ export class BridgeService {
   ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
     const profile = DOCUMENT_PROFILES[developmentType];
-    const guidePath = toInstalledSkillGuidePath(profile.planningGuideFile);
+    const guide = readSkillGuideDocument(profile.planningGuideFile);
     return [
       `Planning 门禁未通过，正在执行第 ${round} 轮补全。`,
-      `当前开发类型是${profile.label}，必须继续读取并遵循插件 skill 自带指南文档：${guidePath}`,
+      `当前开发类型是${profile.label}，插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容补全计划。`,
+      ...buildGuideDocumentPromptBlock(guide),
       "请仅补齐缺失章节并输出完整计划，章节顺序保持不变。",
       `缺失章节：${missingSections.join("、")}`,
       "",
@@ -3577,11 +3630,12 @@ export class BridgeService {
   ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
     const profile = DOCUMENT_PROFILES[developmentType];
-    const guidePath = toInstalledSkillGuidePath(profile.planningGuideFile);
+    const guide = readSkillGuideDocument(profile.planningGuideFile);
     return [
       "用户对 Planning 阶段提出了反馈，请在保留结构化章节的前提下完成修订，并输出完整计划。",
-      `当前开发类型是${profile.label}，必须继续读取并遵循插件 skill 自带指南文档：${guidePath}`,
-      "除读取上述指南文档外，禁止执行其他工具调用；读取指南后直接输出修订后的计划。",
+      `当前开发类型是${profile.label}，插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容修订计划。`,
+      ...buildGuideDocumentPromptBlock(guide),
+      "指南全文已经在本提示词中提供，禁止执行工具调用；直接输出修订后的计划。",
       `用户反馈：${feedback}`,
       "",
       `验收标准：${acceptance}`,

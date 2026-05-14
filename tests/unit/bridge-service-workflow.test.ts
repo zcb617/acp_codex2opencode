@@ -869,12 +869,18 @@ describe("bridge workflow approvals", () => {
     expect(designPrompt).toContain("插件 skill 自带指南文档");
     expect(designPrompt).toContain("team-delegate");
     expect(designPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
+    expect(designPrompt).toContain("指南全文开始");
+    expect(designPrompt).toContain("你必须按照上方指南全文的要求编写");
+    expect(designPrompt).toContain("本指南要求输出的不是“想法文档”");
     expect(designPrompt).toContain("可交付开发设计文档编写指南");
     expect(designPrompt).toContain("## 背景与目标");
     expect(designPrompt).toContain("## 开发实施规范");
     expect(planningPrompt).toContain("插件 skill 自带指南文档");
     expect(planningPrompt).toContain("team-delegate");
     expect(planningPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
+    expect(planningPrompt).toContain("指南全文开始");
+    expect(planningPrompt).toContain("你必须按照上方指南全文的要求编写");
+    expect(planningPrompt).toContain("完整开发计划 = 开发实施计划");
     expect(planningPrompt).toContain("可交付开发计划编写指南");
     expect(planningPrompt).toContain("## 项目与目标");
     expect(planningPrompt).toContain("## 最终交付清单");
@@ -893,6 +899,9 @@ describe("bridge workflow approvals", () => {
     expect(designPrompt).toContain("插件 skill 自带指南文档");
     expect(designPrompt).toContain("team-delegate");
     expect(designPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
+    expect(designPrompt).toContain("指南全文开始");
+    expect(designPrompt).toContain("你必须按照上方指南全文的要求编写");
+    expect(designPrompt).toContain("Bug 修改设计文档 = 失败事实记录");
     expect(designPrompt).toContain("可交付BUG修改设计文档编写指南");
     expect(designPrompt).toContain("## 失败事实");
     expect(designPrompt).toContain("## 交付测试目标");
@@ -900,6 +909,9 @@ describe("bridge workflow approvals", () => {
     expect(planningPrompt).toContain("插件 skill 自带指南文档");
     expect(planningPrompt).toContain("team-delegate");
     expect(planningPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
+    expect(planningPrompt).toContain("指南全文开始");
+    expect(planningPrompt).toContain("你必须按照上方指南全文的要求编写");
+    expect(planningPrompt).toContain("Bug 修改计划 = 设计承诺落实表");
     expect(planningPrompt).toContain("可交付BUG修改计划编写指南");
     expect(planningPrompt).toContain("## TDD 与红灯测试计划");
     expect(planningPrompt).toContain("## 真实业务交付测试计划");
