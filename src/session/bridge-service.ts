@@ -68,6 +68,9 @@ export interface ExecuteTaskInput {
   requirement_text: string;
   session_alias?: string;
   design_planning_executor?: DesignPlanningExecutor;
+  development_type?: DevelopmentType | "need_user_input";
+  development_type_reason?: string;
+  development_type_evidence?: string[];
   model_confirm_choice?: "use_saved_model" | "select_new_model";
   selected_model?: string;
   start_phase?: WorkflowEntryPhase | "need_user_input";
@@ -118,6 +121,7 @@ type WorkflowStage =
 type WorkflowPhase = "design" | "planning" | "implementation" | "rework";
 type WorkflowEntryPhase = "design" | "planning" | "implementation";
 type DesignPlanningExecutor = "main" | "acp";
+type DevelopmentType = "feature" | "bugfix";
 
 interface WorkflowEntryDetection {
   phase: WorkflowEntryPhase | "need_user_input";
@@ -134,6 +138,12 @@ interface WorkflowEntryModelDecision {
 
 interface StartPhaseDecision {
   phase: WorkflowEntryPhase | "need_user_input";
+  evidence: string[];
+  missingContext: string[];
+}
+
+interface DevelopmentTypeDecision {
+  type: DevelopmentType | "need_user_input";
   evidence: string[];
   missingContext: string[];
 }
@@ -181,6 +191,8 @@ interface TaskWorkflowState {
   requirementText: string;
   detectedStartPhase: WorkflowEntryPhase;
   detectionEvidence: string[];
+  developmentType: DevelopmentType;
+  developmentTypeEvidence: string[];
   acceptanceCriteria?: string;
   maxReworkRounds: number;
   autoClose: boolean;
@@ -273,7 +285,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const DESIGN_REQUIRED_SECTIONS = [
+const FEATURE_DESIGN_REQUIRED_SECTIONS = [
   "背景与目标",
   "非目标",
   "范围与术语",
@@ -292,7 +304,7 @@ const DESIGN_REQUIRED_SECTIONS = [
   "开发实施规范"
 ];
 
-const PLANNING_REQUIRED_SECTIONS = [
+const FEATURE_PLANNING_REQUIRED_SECTIONS = [
   "项目与目标",
   "硬约束",
   "范围与非范围",
@@ -307,6 +319,61 @@ const PLANNING_REQUIRED_SECTIONS = [
   "需求到验收映射",
   "最终交付清单"
 ];
+
+const BUGFIX_DESIGN_REQUIRED_SECTIONS = [
+  "问题摘要",
+  "失败事实",
+  "影响范围",
+  "根因分析",
+  "修复目标与非目标",
+  "修复设计",
+  "修改范围",
+  "自动化验证目标",
+  "交付测试目标",
+  "风险与回退",
+  "上下文恢复说明"
+];
+
+const BUGFIX_PLANNING_REQUIRED_SECTIONS = [
+  "Bug 与设计来源",
+  "设计目标覆盖表",
+  "实施任务拆分",
+  "TDD 与红灯测试计划",
+  "自动化验证计划",
+  "真实业务交付测试计划",
+  "交付测试失败整改记录",
+  "设计完成核对清单",
+  "上下文恢复说明"
+];
+
+const DOCUMENT_PROFILES: Record<
+  DevelopmentType,
+  {
+    developmentType: DevelopmentType;
+    label: string;
+    designGuide: string;
+    planningGuide: string;
+    designRequiredSections: string[];
+    planningRequiredSections: string[];
+  }
+> = {
+  feature: {
+    developmentType: "feature",
+    label: "新增功能",
+    designGuide: "docs/可交付开发设计文档编写指南-v0.1.md",
+    planningGuide: "docs/可交付开发计划编写指南-v0.1.md",
+    designRequiredSections: FEATURE_DESIGN_REQUIRED_SECTIONS,
+    planningRequiredSections: FEATURE_PLANNING_REQUIRED_SECTIONS
+  },
+  bugfix: {
+    developmentType: "bugfix",
+    label: "BUG 修改",
+    designGuide: "docs/可交付BUG修改设计文档编写指南-v0.1.md",
+    planningGuide: "docs/可交付BUG修改计划编写指南-v0.1.md",
+    designRequiredSections: BUGFIX_DESIGN_REQUIRED_SECTIONS,
+    planningRequiredSections: BUGFIX_PLANNING_REQUIRED_SECTIONS
+  }
+};
 
 const DEFAULT_WORKFLOW_MODELS = [
   "llm-router-openai-compatible/kimi-for-roo",
@@ -815,12 +882,13 @@ export class BridgeService {
 
     this.ensureWorkflowSlotAvailable(workflowKey);
     const startDecision = this.resolveStartPhaseDecision(input);
-    if (startDecision.phase === "need_user_input") {
+    const developmentDecision = this.resolveDevelopmentTypeDecision(input);
+    if (startDecision.phase === "need_user_input" || developmentDecision.type === "need_user_input") {
       await this.audit(requestId, "task.execute.start.needs-user-input", "codex", "OK", {
         sessionAlias,
-        missingContext: startDecision.missingContext
+        missingContext: [...startDecision.missingContext, ...developmentDecision.missingContext]
       });
-      return makeResult(requestId, this.buildNeedsUserInputResponse(sessionAlias, startDecision));
+      return makeResult(requestId, this.buildNeedsUserInputResponse(sessionAlias, startDecision, developmentDecision));
     }
 
     const designPlanningExecutor = this.resolveDesignPlanningExecutor(input);
@@ -834,7 +902,7 @@ export class BridgeService {
       });
       return makeResult(
         requestId,
-        this.buildNeedsMainPhaseResponse(sessionAlias, startDecision.phase, startDecision.evidence)
+        this.buildNeedsMainPhaseResponse(sessionAlias, startDecision.phase, startDecision.evidence, developmentDecision)
       );
     }
 
@@ -847,7 +915,13 @@ export class BridgeService {
       });
       return makeResult(
         requestId,
-        this.buildNeedsModelConfirmResponse(sessionAlias, modelGate.savedModel, modelGate.availableModels, startDecision)
+        this.buildNeedsModelConfirmResponse(
+          sessionAlias,
+          modelGate.savedModel,
+          modelGate.availableModels,
+          startDecision,
+          developmentDecision
+        )
       );
     }
 
@@ -865,6 +939,7 @@ export class BridgeService {
         modelGate.availableModels,
         reason,
         startDecision,
+        developmentDecision,
         modelGate.savedModel
       )
     );
@@ -884,6 +959,7 @@ export class BridgeService {
     }
     const effectiveInput = this.resolveEffectiveStartInput(workflowKey, input);
     const startDecision = this.resolveStartPhaseDecision(effectiveInput);
+    const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
     const modelGate = await this.resolveModelGate(input.workspace_path);
     if (choice === "select_new_model") {
       return makeResult(
@@ -893,6 +969,7 @@ export class BridgeService {
           modelGate.availableModels,
           "你选择了重新选择模型，请从可用模型中选择一个。",
           startDecision,
+          developmentDecision,
           modelGate.savedModel
         )
       );
@@ -908,6 +985,7 @@ export class BridgeService {
           modelGate.availableModels,
           reason,
           startDecision,
+          developmentDecision,
           modelGate.savedModel
         )
       );
@@ -937,6 +1015,7 @@ export class BridgeService {
     }
     const effectiveInput = this.resolveEffectiveStartInput(workflowKey, input);
     const startDecision = this.resolveStartPhaseDecision(effectiveInput);
+    const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
     const modelGate = await this.resolveModelGate(effectiveInput.workspace_path);
     if (!modelGate.availableModels.includes(selectedModel)) {
       return makeResult(
@@ -946,6 +1025,7 @@ export class BridgeService {
           modelGate.availableModels,
           `模型 ${selectedModel} 不在当前可用模型列表中，请重新选择。`,
           startDecision,
+          developmentDecision,
           modelGate.savedModel
         )
       );
@@ -970,21 +1050,16 @@ export class BridgeService {
     selectedModel: string
   ): Promise<BridgeResult<unknown>> {
     const startDecision = this.resolveStartPhaseDecision(input);
-    if (startDecision.phase === "need_user_input") {
+    const developmentDecision = this.resolveDevelopmentTypeDecision(input);
+    if (startDecision.phase === "need_user_input" || developmentDecision.type === "need_user_input") {
       this.clearPendingStartInput(workflowKey);
       await this.audit(requestId, "task.execute.start.needs-user-input", "codex", "OK", {
         sessionAlias,
-        missingContext: startDecision.missingContext,
+        missingContext: [...startDecision.missingContext, ...developmentDecision.missingContext],
         selectedModel
       });
       return makeResult(requestId, {
-        session_alias: sessionAlias,
-        workflow_status: "NEEDS_USER_INPUT",
-        current_stage: "NEEDS_USER_INPUT",
-        next_action_required: ["provide_context_then_restart"],
-        detected_start_phase: null,
-        detection_evidence: startDecision.evidence,
-        missing_context: startDecision.missingContext,
+        ...this.buildNeedsUserInputResponse(sessionAlias, startDecision, developmentDecision),
         selected_model: selectedModel
       });
     }
@@ -1000,7 +1075,7 @@ export class BridgeService {
         selectedModel
       });
       return makeResult(requestId, {
-        ...this.buildNeedsMainPhaseResponse(sessionAlias, startDecision.phase, startDecision.evidence),
+        ...this.buildNeedsMainPhaseResponse(sessionAlias, startDecision.phase, startDecision.evidence, developmentDecision),
         selected_model: selectedModel
       });
     }
@@ -1014,7 +1089,9 @@ export class BridgeService {
       sessionAlias,
       timeoutMs,
       startDecision.phase,
-      startDecision.evidence
+      startDecision.evidence,
+      developmentDecision.type,
+      developmentDecision.evidence
     );
     this.workflowByKey.set(workflowKey, workflow);
     this.clearPendingStartInput(workflowKey);
@@ -1026,6 +1103,7 @@ export class BridgeService {
       sessionAlias,
       bridgeSessionId: workflow.bridgeSessionId,
       detectedStartPhase: startDecision.phase,
+      developmentType: developmentDecision.type,
       selectedModel
     });
     const response = this.buildWorkflowStatusResponse(workflow);
@@ -1100,7 +1178,8 @@ export class BridgeService {
     sessionAlias: string,
     savedModel: string,
     availableModels: string[],
-    startDecision: StartPhaseDecision
+    startDecision: StartPhaseDecision,
+    developmentDecision: DevelopmentTypeDecision
   ): Record<string, unknown> {
     return {
       session_alias: sessionAlias,
@@ -1108,6 +1187,7 @@ export class BridgeService {
       current_stage: "NEEDS_MODEL_CONFIRM",
       next_action_required: ["model_confirm"],
       ...this.buildBusinessModelSelectionContext(startDecision, "confirm"),
+      ...this.toDevelopmentDecisionPayload(developmentDecision),
       saved_model: savedModel,
       default_option: "1",
       user_options: [
@@ -1135,6 +1215,7 @@ export class BridgeService {
     availableModels: string[],
     reason: string,
     startDecision: StartPhaseDecision,
+    developmentDecision: DevelopmentTypeDecision,
     savedModel?: string
   ): Record<string, unknown> {
     return {
@@ -1143,6 +1224,7 @@ export class BridgeService {
       current_stage: "NEEDS_MODEL_SELECTION",
       next_action_required: ["model_select"],
       ...this.buildBusinessModelSelectionContext(startDecision, "select"),
+      ...this.toDevelopmentDecisionPayload(developmentDecision),
       reason,
       saved_model: savedModel,
       available_models: availableModels
@@ -1268,27 +1350,89 @@ export class BridgeService {
     };
   }
 
-  private buildNeedsUserInputResponse(sessionAlias: string, startDecision: StartPhaseDecision): Record<string, unknown> {
+  private resolveDevelopmentTypeDecision(input: ExecuteTaskInput): DevelopmentTypeDecision {
+    const developmentType = input.development_type;
+    const missingContextFromInput =
+      input.missing_context?.filter((item) => typeof item === "string" && item.trim().length > 0) ?? [];
+    const evidenceFromInput =
+      input.development_type_evidence?.filter((item) => typeof item === "string" && item.trim().length > 0) ?? [];
+    const reason = input.development_type_reason?.trim();
+
+    if (!developmentType) {
+      return {
+        type: "need_user_input",
+        evidence: ["主对话未提供 development_type；按协议需要先判断开发类型后再调用 start。"],
+        missingContext: ["development_type（feature/bugfix/need_user_input）"]
+      };
+    }
+
+    if (developmentType === "need_user_input") {
+      return {
+        type: "need_user_input",
+        evidence:
+          evidenceFromInput.length > 0
+            ? evidenceFromInput
+            : ["主对话无法明确判断开发类型，需要用户补充这是新增功能还是 BUG 修改。"],
+        missingContext:
+          missingContextFromInput.length > 0
+            ? missingContextFromInput
+            : ["请明确这是新增功能还是 BUG 修改。"]
+      };
+    }
+
+    return {
+      type: developmentType,
+      evidence:
+        evidenceFromInput.length > 0
+          ? evidenceFromInput
+          : [
+              reason
+                ? `主对话判定开发类型: ${developmentType}；理由: ${reason}`
+                : `主对话判定开发类型: ${developmentType}`
+            ],
+      missingContext: []
+    };
+  }
+
+  private buildNeedsUserInputResponse(
+    sessionAlias: string,
+    startDecision: StartPhaseDecision,
+    developmentDecision?: DevelopmentTypeDecision
+  ): Record<string, unknown> {
+    const missingContext = Array.from(
+      new Set([...startDecision.missingContext, ...(developmentDecision?.missingContext ?? [])])
+    );
+    const developmentTypePayload = developmentDecision
+      ? this.toDevelopmentDecisionPayload(developmentDecision)
+      : {
+          detected_development_type: null,
+          development_type_evidence: [],
+          document_profile: null
+        };
     return {
       session_alias: sessionAlias,
       workflow_status: "NEEDS_USER_INPUT",
       current_stage: "NEEDS_USER_INPUT",
       next_action_required: ["provide_context_then_restart"],
       business_stage: "上下文补充",
-      business_reason: "当前信息还不足以判断应进入方案制定、计划制定还是计划实施。",
-      next_business_action: "补充缺失上下文后重新判断业务阶段",
-      user_message: "当前信息还不足以判断下一步业务阶段。请先补充缺失的方案、计划或实施约定。",
+      business_reason: "当前信息还不足以判断应进入哪个业务阶段，或无法判断这是新增功能还是 BUG 修改。",
+      next_business_action: "补充缺失上下文后重新判断业务阶段和开发类型",
+      user_message:
+        "当前信息还不足以判断下一步业务阶段或开发类型。请先补充缺失的方案、计划、实施约定，或明确这是新增功能还是 BUG 修改。",
       detected_start_phase: null,
       detection_evidence: startDecision.evidence,
-      missing_context: startDecision.missingContext
+      ...developmentTypePayload,
+      missing_context: missingContext
     };
   }
 
   private buildNeedsMainPhaseResponse(
     sessionAlias: string,
     phase: "design" | "planning",
-    detectionEvidence: string[]
+    detectionEvidence: string[],
+    developmentDecision: DevelopmentTypeDecision
   ): Record<string, unknown> {
+    const developmentPayload = this.toDevelopmentDecisionPayload(developmentDecision);
     if (phase === "design") {
       return {
         session_alias: sessionAlias,
@@ -1300,6 +1444,7 @@ export class BridgeService {
         user_message: "当前还没有完整方案，需要先进入方案制定阶段。按约定方案制定由主会话执行，不需要选择 ACP 模型。",
         detected_start_phase: "design",
         detection_evidence: detectionEvidence,
+        ...developmentPayload,
         next_action_required: ["main_or_acp_selection"],
         default_option: "1",
         user_options: [
@@ -1327,6 +1472,7 @@ export class BridgeService {
       user_message: "当前已有方案，需要进入计划制定阶段。按约定计划制定由主会话执行，不需要选择 ACP 模型。",
       detected_start_phase: "planning",
       detection_evidence: detectionEvidence,
+      ...developmentPayload,
       next_action_required: ["main_or_acp_selection"],
       default_option: "1",
       user_options: [
@@ -1355,6 +1501,33 @@ export class BridgeService {
       return "计划实施";
     }
     return "上下文补充";
+  }
+
+  private toDevelopmentDecisionPayload(decision: DevelopmentTypeDecision): Record<string, unknown> {
+    if (decision.type === "need_user_input") {
+      return {
+        detected_development_type: null,
+        development_type_evidence: decision.evidence,
+        document_profile: null
+      };
+    }
+    return {
+      detected_development_type: decision.type,
+      development_type_evidence: decision.evidence,
+      document_profile: this.toDocumentProfilePayload(decision.type)
+    };
+  }
+
+  private toDocumentProfilePayload(developmentType: DevelopmentType): Record<string, unknown> {
+    const profile = DOCUMENT_PROFILES[developmentType];
+    return {
+      development_type: profile.developmentType,
+      label: profile.label,
+      design_guide: profile.designGuide,
+      planning_guide: profile.planningGuide,
+      design_required_sections: profile.designRequiredSections,
+      planning_required_sections: profile.planningRequiredSections
+    };
   }
 
   private toWorkflowKey(workspacePath: string, sessionAlias: string): string {
@@ -1434,6 +1607,8 @@ export class BridgeService {
       requirementText: workflow.requirementText,
       detectedStartPhase: workflow.detectedStartPhase,
       detectionEvidence: workflow.detectionEvidence,
+      developmentType: workflow.developmentType,
+      developmentTypeEvidence: workflow.developmentTypeEvidence,
       acceptanceCriteria: workflow.acceptanceCriteria,
       maxReworkRounds: workflow.maxReworkRounds,
       autoClose: workflow.autoClose,
@@ -1487,6 +1662,8 @@ export class BridgeService {
       requirementText: this.readString(snapshot.requirementText) ?? "",
       detectedStartPhase: this.readWorkflowEntryPhase(snapshot.detectedStartPhase) ?? "implementation",
       detectionEvidence: this.readStringArray(snapshot.detectionEvidence),
+      developmentType: this.readDevelopmentType(snapshot.developmentType) ?? "feature",
+      developmentTypeEvidence: this.readStringArray(snapshot.developmentTypeEvidence),
       acceptanceCriteria: this.readString(snapshot.acceptanceCriteria),
       maxReworkRounds: this.readNumber(snapshot.maxReworkRounds) ?? 2,
       autoClose: this.readBoolean(snapshot.autoClose) ?? true,
@@ -1587,6 +1764,11 @@ export class BridgeService {
   private readWorkflowEntryPhase(value: unknown): WorkflowEntryPhase | undefined {
     const phase = this.readString(value);
     return phase === "design" || phase === "planning" || phase === "implementation" ? phase : undefined;
+  }
+
+  private readDevelopmentType(value: unknown): DevelopmentType | undefined {
+    const developmentType = this.readString(value);
+    return developmentType === "feature" || developmentType === "bugfix" ? developmentType : undefined;
   }
 
   private readAgentMode(value: unknown): "plan" | "build" | undefined {
@@ -2536,7 +2718,9 @@ export class BridgeService {
     sessionAlias: string,
     timeoutMs: number | undefined,
     detectedStartPhase: WorkflowEntryPhase,
-    detectionEvidence: string[]
+    detectionEvidence: string[],
+    developmentType: DevelopmentType = "feature",
+    developmentTypeEvidence: string[] = []
   ): Promise<TaskWorkflowState> {
     const workflowTurnTimeoutMs = this.resolveWorkflowTurnTimeoutMs(timeoutMs);
     const initResult = await this.initSession({
@@ -2573,6 +2757,8 @@ export class BridgeService {
       requirementText: input.requirement_text,
       detectedStartPhase,
       detectionEvidence,
+      developmentType,
+      developmentTypeEvidence,
       acceptanceCriteria: input.acceptance_criteria,
       maxReworkRounds: input.max_rework_rounds ?? 2,
       autoClose: input.auto_close ?? true,
@@ -2610,7 +2796,7 @@ export class BridgeService {
       workflow,
       "design",
       turnType,
-      this.buildDesignPrompt(workflow.requirementText, workflow.acceptanceCriteria)
+      this.buildDesignPrompt(workflow.requirementText, workflow.acceptanceCriteria, workflow.developmentType)
     );
     workflow.steps.push(this.turnResultToStep("design", designResult));
     this.ensureTurnSuccess(designResult, "设计委派失败");
@@ -2620,13 +2806,13 @@ export class BridgeService {
       workflowId: workflow.workflowId,
       bridgeSessionId: workflow.bridgeSessionId,
       initialResult: designResult,
-      requiredSections: DESIGN_REQUIRED_SECTIONS,
+      requiredSections: DOCUMENT_PROFILES[workflow.developmentType].designRequiredSections,
       errorCode: ErrorCodes.DESIGN_GATE_FAILED,
       maxRounds: workflow.maxReworkRounds,
       timeoutMs: workflow.timeoutMs,
       steps: workflow.steps,
       repairPromptBuilder: (missingSections, round) =>
-        this.buildDesignRepairPrompt(round, missingSections, workflow.acceptanceCriteria)
+        this.buildDesignRepairPrompt(round, missingSections, workflow.acceptanceCriteria, workflow.developmentType)
     });
 
     workflow.phaseGates.design = {
@@ -2642,7 +2828,7 @@ export class BridgeService {
       workflow,
       "design-feedback",
       "rework",
-      this.buildDesignFeedbackPrompt(feedback, workflow.acceptanceCriteria)
+      this.buildDesignFeedbackPrompt(feedback, workflow.acceptanceCriteria, workflow.developmentType)
     );
     workflow.steps.push(this.turnResultToStep("design", result));
     this.ensureTurnSuccess(result, "设计修订委派失败");
@@ -2652,13 +2838,13 @@ export class BridgeService {
       workflowId: workflow.workflowId,
       bridgeSessionId: workflow.bridgeSessionId,
       initialResult: result,
-      requiredSections: DESIGN_REQUIRED_SECTIONS,
+      requiredSections: DOCUMENT_PROFILES[workflow.developmentType].designRequiredSections,
       errorCode: ErrorCodes.DESIGN_GATE_FAILED,
       maxRounds: workflow.maxReworkRounds,
       timeoutMs: workflow.timeoutMs,
       steps: workflow.steps,
       repairPromptBuilder: (missingSections, round) =>
-        this.buildDesignRepairPrompt(round, missingSections, workflow.acceptanceCriteria)
+        this.buildDesignRepairPrompt(round, missingSections, workflow.acceptanceCriteria, workflow.developmentType)
     });
 
     workflow.phaseGates.design = {
@@ -2674,7 +2860,7 @@ export class BridgeService {
       workflow,
       "planning",
       "rework",
-      this.buildPlanningPrompt(workflow.requirementText, workflow.acceptanceCriteria)
+      this.buildPlanningPrompt(workflow.requirementText, workflow.acceptanceCriteria, workflow.developmentType)
     );
     workflow.steps.push(this.turnResultToStep("planning", planningResult));
     this.ensureTurnSuccess(planningResult, "计划委派失败");
@@ -2684,13 +2870,13 @@ export class BridgeService {
       workflowId: workflow.workflowId,
       bridgeSessionId: workflow.bridgeSessionId,
       initialResult: planningResult,
-      requiredSections: PLANNING_REQUIRED_SECTIONS,
+      requiredSections: DOCUMENT_PROFILES[workflow.developmentType].planningRequiredSections,
       errorCode: ErrorCodes.PLANNING_GATE_FAILED,
       maxRounds: workflow.maxReworkRounds,
       timeoutMs: workflow.timeoutMs,
       steps: workflow.steps,
       repairPromptBuilder: (missingSections, round) =>
-        this.buildPlanningRepairPrompt(round, missingSections, workflow.acceptanceCriteria)
+        this.buildPlanningRepairPrompt(round, missingSections, workflow.acceptanceCriteria, workflow.developmentType)
     });
 
     workflow.phaseGates.planning = {
@@ -2706,7 +2892,7 @@ export class BridgeService {
       workflow,
       "planning-feedback",
       "rework",
-      this.buildPlanningFeedbackPrompt(feedback, workflow.acceptanceCriteria)
+      this.buildPlanningFeedbackPrompt(feedback, workflow.acceptanceCriteria, workflow.developmentType)
     );
     workflow.steps.push(this.turnResultToStep("planning", result));
     this.ensureTurnSuccess(result, "计划修订委派失败");
@@ -2716,13 +2902,13 @@ export class BridgeService {
       workflowId: workflow.workflowId,
       bridgeSessionId: workflow.bridgeSessionId,
       initialResult: result,
-      requiredSections: PLANNING_REQUIRED_SECTIONS,
+      requiredSections: DOCUMENT_PROFILES[workflow.developmentType].planningRequiredSections,
       errorCode: ErrorCodes.PLANNING_GATE_FAILED,
       maxRounds: workflow.maxReworkRounds,
       timeoutMs: workflow.timeoutMs,
       steps: workflow.steps,
       repairPromptBuilder: (missingSections, round) =>
-        this.buildPlanningRepairPrompt(round, missingSections, workflow.acceptanceCriteria)
+        this.buildPlanningRepairPrompt(round, missingSections, workflow.acceptanceCriteria, workflow.developmentType)
     });
 
     workflow.phaseGates.planning = {
@@ -2812,6 +2998,9 @@ export class BridgeService {
       bridge_session_id: workflow.bridgeSessionId,
       detected_start_phase: workflow.detectedStartPhase,
       detection_evidence: workflow.detectionEvidence,
+      detected_development_type: workflow.developmentType,
+      development_type_evidence: workflow.developmentTypeEvidence,
+      document_profile: this.toDocumentProfilePayload(workflow.developmentType),
       current_model: workflow.activeModel,
       current_agent_mode: workflow.activeAgentMode,
       workflow_status: workflow.stage,
@@ -3237,28 +3426,19 @@ export class BridgeService {
     ].join("\n");
   }
 
-  private buildDesignPrompt(requirementText: string, acceptanceCriteria?: string): string {
+  private buildDesignPrompt(
+    requirementText: string,
+    acceptanceCriteria?: string,
+    developmentType: DevelopmentType = "feature"
+  ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[developmentType];
     return [
       "你是团队中的架构设计负责人。",
-      "当前阶段是 Design，必须严格遵循《可交付开发设计文档编写指南-v0.1.md》。",
+      `当前开发类型是${profile.label}。`,
+      `当前阶段是 Design，必须严格遵循《${profile.designGuide}》。`,
       "请输出一份可执行规范文档，必须按以下章节顺序给出，并使用 markdown 二级标题：",
-      "## 背景与目标",
-      "## 非目标",
-      "## 范围与术语",
-      "## 架构与模块职责",
-      "## 技术选型与约束",
-      "## API 契约",
-      "## 数据模型",
-      "## 主流程与状态机",
-      "## 异常处理策略矩阵",
-      "## 幂等与去重规则",
-      "## 测试策略",
-      "## 验收标准",
-      "## 发布与回滚 Runbook",
-      "## SLO 与告警",
-      "## 环境配置矩阵",
-      "## 开发实施规范",
+      ...profile.designRequiredSections.map((section) => `## ${section}`),
       "",
       "规则：",
       "1) 全文中文。",
@@ -3275,29 +3455,23 @@ export class BridgeService {
     ].join("\n");
   }
 
-  private buildPlanningPrompt(requirementText: string, acceptanceCriteria?: string): string {
+  private buildPlanningPrompt(
+    requirementText: string,
+    acceptanceCriteria?: string,
+    developmentType: DevelopmentType = "feature"
+  ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[developmentType];
     return [
       "你是团队中的实施计划负责人。",
-      "当前阶段是 Planning，必须严格遵循《可交付开发计划编写指南-v0.1.md》。",
-      "请输出一份完整开发计划，必须按以下章节顺序给出，并使用 markdown 二级标题：",
-      "## 项目与目标",
-      "## 硬约束",
-      "## 范围与非范围",
-      "## 交付完成定义",
-      "## 业务交付场景",
-      "## 自测命令",
-      "## 失败修复与复测机制",
-      "## 技术设计与模块边界",
-      "## API、数据模型与配置",
-      "## 开发任务拆分",
-      "## 测试策略",
-      "## 需求到验收映射",
-      "## 最终交付清单",
+      `当前开发类型是${profile.label}。`,
+      `当前阶段是 Planning，必须严格遵循《${profile.planningGuide}》。`,
+      "请输出一份完整计划，必须按以下章节顺序给出，并使用 markdown 二级标题：",
+      ...profile.planningRequiredSections.map((section) => `## ${section}`),
       "",
       "规则：",
       "1) 全文中文。",
-      "2) 必须包含 DS 场景、Task 拆分和验证命令。",
+      "2) 必须包含业务场景、Task 拆分和验证命令。",
       "3) 必须定义失败修复与复测闭环。",
       "4) 不得省略上述任一章节。",
       "5) 本阶段禁止执行工具调用，直接输出计划文档。",
@@ -3310,10 +3484,17 @@ export class BridgeService {
     ].join("\n");
   }
 
-  private buildDesignRepairPrompt(round: number, missingSections: string[], acceptanceCriteria?: string): string {
+  private buildDesignRepairPrompt(
+    round: number,
+    missingSections: string[],
+    acceptanceCriteria?: string,
+    developmentType: DevelopmentType = "feature"
+  ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[developmentType];
     return [
       `Design 门禁未通过，正在执行第 ${round} 轮补全。`,
+      `当前开发类型是${profile.label}，必须继续遵循《${profile.designGuide}》。`,
       "请仅补齐缺失章节并输出完整设计文档，章节顺序保持不变。",
       `缺失章节：${missingSections.join("、")}`,
       "",
@@ -3322,10 +3503,16 @@ export class BridgeService {
     ].join("\n");
   }
 
-  private buildDesignFeedbackPrompt(feedback: string, acceptanceCriteria?: string): string {
+  private buildDesignFeedbackPrompt(
+    feedback: string,
+    acceptanceCriteria?: string,
+    developmentType: DevelopmentType = "feature"
+  ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[developmentType];
     return [
       "用户对 Design 阶段提出了反馈，请在保留结构化章节的前提下完成修订，并输出完整文档。",
+      `当前开发类型是${profile.label}，必须继续遵循《${profile.designGuide}》。`,
       "禁止执行工具调用，直接输出修订后的文档。",
       `用户反馈：${feedback}`,
       "",
@@ -3334,11 +3521,18 @@ export class BridgeService {
     ].join("\n");
   }
 
-  private buildPlanningRepairPrompt(round: number, missingSections: string[], acceptanceCriteria?: string): string {
+  private buildPlanningRepairPrompt(
+    round: number,
+    missingSections: string[],
+    acceptanceCriteria?: string,
+    developmentType: DevelopmentType = "feature"
+  ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[developmentType];
     return [
       `Planning 门禁未通过，正在执行第 ${round} 轮补全。`,
-      "请仅补齐缺失章节并输出完整开发计划，章节顺序保持不变。",
+      `当前开发类型是${profile.label}，必须继续遵循《${profile.planningGuide}》。`,
+      "请仅补齐缺失章节并输出完整计划，章节顺序保持不变。",
       `缺失章节：${missingSections.join("、")}`,
       "",
       `验收标准：${acceptance}`,
@@ -3346,10 +3540,16 @@ export class BridgeService {
     ].join("\n");
   }
 
-  private buildPlanningFeedbackPrompt(feedback: string, acceptanceCriteria?: string): string {
+  private buildPlanningFeedbackPrompt(
+    feedback: string,
+    acceptanceCriteria?: string,
+    developmentType: DevelopmentType = "feature"
+  ): string {
     const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[developmentType];
     return [
       "用户对 Planning 阶段提出了反馈，请在保留结构化章节的前提下完成修订，并输出完整计划。",
+      `当前开发类型是${profile.label}，必须继续遵循《${profile.planningGuide}》。`,
       "禁止执行工具调用，直接输出修订后的计划。",
       `用户反馈：${feedback}`,
       "",

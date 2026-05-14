@@ -157,9 +157,11 @@ async function startAndConfirmModel(
     start_phase_evidence?: string[];
     missing_context?: string[];
     design_planning_executor?: "main" | "acp";
+    development_type?: "feature" | "bugfix" | "need_user_input";
   }
 ): Promise<Awaited<ReturnType<BridgeService["executeTask"]>>> {
   const start = await service.executeTask({
+    development_type: "feature",
     ...input,
     action: "start"
   });
@@ -167,6 +169,7 @@ async function startAndConfirmModel(
   expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
 
   return service.executeTask({
+    development_type: "feature",
     ...input,
     action: "model_confirm",
     model_confirm_choice: "use_saved_model"
@@ -192,7 +195,8 @@ describe("bridge workflow approvals", () => {
         workspace_path: "D:/workspace",
         requirement_text: "设计和计划已经确认，可以直接进入实施。",
         session_alias: "sync-wait-default",
-        start_phase: "implementation"
+        start_phase: "implementation",
+        development_type: "feature"
       },
       "sync-wait-default",
       undefined,
@@ -231,7 +235,8 @@ describe("bridge workflow approvals", () => {
       session_alias: "task-business-design",
       action: "start",
       start_phase: "design",
-      start_phase_reason: "用户还没有方案，需要先制定方案。"
+      start_phase_reason: "用户还没有方案，需要先制定方案。",
+      development_type: "feature"
     });
 
     expect(start.success).toBe(true);
@@ -253,7 +258,8 @@ describe("bridge workflow approvals", () => {
       session_alias: "task-business-planning",
       action: "start",
       start_phase: "planning",
-      start_phase_reason: "当前已经有方案，但还没有计划。"
+      start_phase_reason: "当前已经有方案，但还没有计划。",
+      development_type: "feature"
     });
 
     expect(start.success).toBe(true);
@@ -274,7 +280,8 @@ describe("bridge workflow approvals", () => {
       session_alias: "task-business-implementation",
       action: "start",
       start_phase: "implementation",
-      start_phase_reason: "当前已经有方案和计划，用户确认可以进入实施。"
+      start_phase_reason: "当前已经有方案和计划，用户确认可以进入实施。",
+      development_type: "feature"
     });
 
     expect(start.success).toBe(true);
@@ -361,7 +368,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: "设计和计划已经确认，直接进入实施。创建 delivery-result.md。",
       session_alias: "task-short-timeout",
-      start_phase: "implementation" as const
+      start_phase: "implementation" as const,
+      development_type: "feature" as const
     };
 
     const start = await service.executeTask({
@@ -770,7 +778,8 @@ describe("bridge workflow approvals", () => {
       action: "start",
       start_phase: "need_user_input",
       start_phase_evidence: ["mock-detection:missing-context"],
-      missing_context: ["design_doc", "plan_doc"]
+      missing_context: ["design_doc", "plan_doc"],
+      development_type: "feature"
     });
     expect(start.success).toBe(true);
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
@@ -794,13 +803,127 @@ describe("bridge workflow approvals", () => {
       session_alias: "task-005-b",
       action: "start",
       start_phase: "need_user_input",
-      missing_context: ["start_phase（design/planning/implementation/need_user_input）"]
+      missing_context: ["start_phase（design/planning/implementation/need_user_input）"],
+      development_type: "feature"
     });
 
     expect(start.success).toBe(true);
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
     expect((hacked.detectWorkflowEntry as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
     expect((hacked.initSession as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it("should require development type before choosing an executor or model", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as Record<string, unknown>;
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-missing-development-type",
+      action: "start",
+      start_phase: "design",
+      start_phase_reason: "用户还没有方案，需要先制定方案。"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
+    expect((start.data as { missing_context: string[] }).missing_context).toContain(
+      "development_type（feature/bugfix/need_user_input）"
+    );
+    expect(hacked.initSession).not.toHaveBeenCalled();
+  });
+
+  it("should ask for context when development type is explicitly unclear", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as Record<string, unknown>;
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-unclear-development-type",
+      action: "start",
+      start_phase: "design",
+      development_type: "need_user_input",
+      missing_context: ["请明确这是新增功能还是 BUG 修改"]
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
+    expect((start.data as { missing_context: string[] }).missing_context).toContain(
+      "请明确这是新增功能还是 BUG 修改"
+    );
+    expect(hacked.initSession).not.toHaveBeenCalled();
+  });
+
+  it("should build feature design and planning prompts with development guides", () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as {
+      buildDesignPrompt: (requirementText: string, acceptanceCriteria?: string, developmentType?: "feature") => string;
+      buildPlanningPrompt: (requirementText: string, acceptanceCriteria?: string, developmentType?: "feature") => string;
+    };
+
+    const designPrompt = hacked.buildDesignPrompt("实现一个功能", undefined, "feature");
+    const planningPrompt = hacked.buildPlanningPrompt("实现一个功能", undefined, "feature");
+
+    expect(designPrompt).toContain("可交付开发设计文档编写指南");
+    expect(designPrompt).toContain("## 背景与目标");
+    expect(designPrompt).toContain("## 开发实施规范");
+    expect(planningPrompt).toContain("可交付开发计划编写指南");
+    expect(planningPrompt).toContain("## 项目与目标");
+    expect(planningPrompt).toContain("## 最终交付清单");
+  });
+
+  it("should build bugfix design and planning prompts with bugfix guides", () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as {
+      buildDesignPrompt: (requirementText: string, acceptanceCriteria?: string, developmentType?: "bugfix") => string;
+      buildPlanningPrompt: (requirementText: string, acceptanceCriteria?: string, developmentType?: "bugfix") => string;
+    };
+
+    const designPrompt = hacked.buildDesignPrompt("修复恢复后找不到委派流程的问题", undefined, "bugfix");
+    const planningPrompt = hacked.buildPlanningPrompt("修复恢复后找不到委派流程的问题", undefined, "bugfix");
+
+    expect(designPrompt).toContain("可交付BUG修改设计文档编写指南");
+    expect(designPrompt).toContain("## 失败事实");
+    expect(designPrompt).toContain("## 交付测试目标");
+    expect(designPrompt).not.toContain("## SLO 与告警");
+    expect(planningPrompt).toContain("可交付BUG修改计划编写指南");
+    expect(planningPrompt).toContain("## TDD 与红灯测试计划");
+    expect(planningPrompt).toContain("## 真实业务交付测试计划");
+    expect(planningPrompt).not.toContain("## 最终交付清单");
+  });
+
+  it("should persist and restore the selected development type", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "acp-development-type-restore-"));
+    const service = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await service.init();
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-development-type-restore",
+      start_phase: "implementation",
+      development_type: "bugfix"
+    });
+    await service.shutdown();
+
+    const restoredService = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await restoredService.init();
+    const startAgain = await restoredService.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-development-type-restore",
+      action: "start",
+      start_phase: "implementation",
+      development_type: "bugfix"
+    });
+    await restoredService.shutdown();
+
+    expect(startAgain.success).toBe(true);
+    expect((startAgain.data as { detected_development_type: string }).detected_development_type).toBe("bugfix");
+    expect((startAgain.data as { document_profile: { design_guide: string } }).document_profile.design_guide).toContain(
+      "可交付BUG修改设计文档编写指南"
+    );
   });
 
   it("should skip design and start from planning when design doc exists in context", async () => {
@@ -1079,7 +1202,8 @@ describe("bridge workflow approvals", () => {
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-start-restore",
       action: "start",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      development_type: "feature"
     });
     await restoredService.shutdown();
 
@@ -1100,7 +1224,8 @@ describe("bridge workflow approvals", () => {
       requirement_text: START_FROM_DESIGN_REQUIREMENT,
       session_alias: "task-008",
       action: "start",
-      start_phase: "design"
+      start_phase: "design",
+      development_type: "feature"
     });
 
     expect(start.success).toBe(true);
@@ -1118,7 +1243,8 @@ describe("bridge workflow approvals", () => {
       requirement_text: `以下是设计文档章节：\n${DESIGN_SECTIONS_TEXT}`,
       session_alias: "task-009",
       action: "start",
-      start_phase: "planning"
+      start_phase: "planning",
+      development_type: "feature"
     });
 
     expect(start.success).toBe(true);

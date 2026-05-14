@@ -26,13 +26,15 @@ describe("delegate tools integration", () => {
       workspace_path: "D:/repo",
       requirement_text: "实现一个功能",
       session_alias: "task-001",
-      action: "start"
+      action: "start",
+      development_type: "feature"
     });
     expect(service.executeTask).toHaveBeenCalledTimes(1);
     expect(service.executeTask).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "start",
-        session_alias: "task-001"
+        session_alias: "task-001",
+        development_type: "feature"
       })
     );
     expect((execute as { success: boolean }).success).toBe(true);
@@ -62,5 +64,24 @@ describe("delegate tools integration", () => {
         action: "cancel_follow_up"
       })
     );
+  });
+
+  it("should reject invalid development type values", async () => {
+    const service = {
+      executeTask: vi.fn(async () => ({ request_id: "req_0", success: true, data: { ok: true } }))
+    };
+
+    const tools = new DelegateTools(service as never);
+
+    await expect(
+      tools.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: "实现一个功能",
+        session_alias: "task-invalid-development-type",
+        action: "start",
+        development_type: "unknown"
+      })
+    ).rejects.toThrow();
+    expect(service.executeTask).not.toHaveBeenCalled();
   });
 });

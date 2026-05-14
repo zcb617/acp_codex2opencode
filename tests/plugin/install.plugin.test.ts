@@ -15,10 +15,12 @@ describe("PT-01 plugin install contract", () => {
     expect(manifest.mcpServers).toBe("./.mcp.json");
     const promptList = ((manifest.interface as { defaultPrompt?: string[] })?.defaultPrompt) ?? [];
     expect(promptList.length).toBeLessThanOrEqual(3);
+    expect(promptList.every((prompt) => prompt.length <= 128)).toBe(true);
     const prompts = promptList.join("\n");
     expect(prompts).toContain("delegate.task.execute");
     expect(prompts).toContain("action=start");
     expect(prompts).toContain("start_phase");
+    expect(prompts).toContain("development_type");
 
     const mcpRaw = await readFile(join(root, ".mcp.json"), "utf8");
     const mcp = JSON.parse(mcpRaw) as {
@@ -51,6 +53,10 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("<PHASE-JUDGEMENT-FIRST>");
     expect(skill).toContain("先在主对话内基于上下文判定业务阶段");
     expect(skill).toContain("判定结果必须随 `start_phase` 传入");
+    expect(skill).toContain("开发类型");
+    expect(skill).toContain("development_type");
+    expect(skill).toContain("BUG 修改");
+    expect(skill).toContain("禁止在插件内部通过关键词穷举判断开发类型");
     expect(skill).toContain("业务导向");
     expect(skill).toContain("只有计划实施阶段才需要选择 ACP 执行模型");
     expect(skill).toContain("禁止把 `workflow_status`");

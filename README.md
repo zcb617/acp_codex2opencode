@@ -16,8 +16,8 @@
 
 `team-delegate` 已加入硬守卫：
 
-1. 先在主对话判定起始阶段（`design` / `planning` / `implementation` / `need_user_input`），再调用 `delegate.task.execute(action=start)`。
-2. `start` 必须携带 `start_phase`（可选带 `start_phase_reason` / `start_phase_evidence` / `missing_context`）。
+1. 先在主对话判定起始阶段（`design` / `planning` / `implementation` / `need_user_input`）和开发类型（`feature` / `bugfix` / `need_user_input`），再调用 `delegate.task.execute(action=start)`。
+2. `start` 必须携带 `start_phase` 和 `development_type`（可选带 `start_phase_reason` / `start_phase_evidence` / `development_type_reason` / `development_type_evidence` / `missing_context`）。
 3. `start` 后先完成模型闸门（`NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION`），再进入 ACP 执行阶段。
 4. 后续只能按 `next_action_required` 推进，不允许越级执行。
 
@@ -33,17 +33,21 @@
    - `start_phase=implementation`：直接进入 ACP 委派执行
    - `start_phase=need_user_input`：返回 `NEEDS_USER_INPUT` 并要求补充 `missing_context`
    - 如需让 ACP 执行 Design / Planning，可在 `start` 传 `design_planning_executor=acp`
-5. `action=status`：查询当前阶段进度，并返回 ACP 新输出摘要素材（如有）
-6. `action=design_feedback`：按反馈修订 Design（仍停在待确认）
-7. `action=design_approve`：进入 Planning 文档产出（停在待确认）
-8. `action=planning_feedback`：按反馈修订 Planning（仍停在待确认）
-9. `action=planning_approve`：进入计划实施；实施完成后进入真实业务交付测试等待节点，不直接判定完成
-10. `action=continue_wait`：当返回 `NEEDS_USER_DECISION` 时，继续新的持续跟进周期
-11. `action=handoff_to_main`：当返回 `NEEDS_USER_DECISION` 时，转交主会话（自动取消并关闭 ACP 会话）
-12. `action=delivery_test_pass`：主会话已完成真实业务交付测试且测试通过，插件进入完成状态
-13. `action=delivery_test_fail`：主会话已完成真实业务交付测试但测试失败，必须提供失败材料，插件进入整改闭环
-14. `action=remediation_approve`：用户确认整改方案和整改计划后，进入当前整改实施
-15. `action=cancel_follow_up`：完成 3 次整改后仍未通过时，用户取消后续工作，本次任务不声明交付完成
+5. Design / Planning 文档规则按主对话提供的 `development_type` 分流：
+   - `development_type=feature`：使用可交付开发设计/计划指南
+   - `development_type=bugfix`：使用可交付 BUG 修改设计/计划指南
+   - `development_type=need_user_input`：返回 `NEEDS_USER_INPUT`，要求补充这是新增功能还是 BUG 修改
+6. `action=status`：查询当前阶段进度，并返回 ACP 新输出摘要素材（如有）
+7. `action=design_feedback`：按反馈修订 Design（仍停在待确认）
+8. `action=design_approve`：进入 Planning 文档产出（停在待确认）
+9. `action=planning_feedback`：按反馈修订 Planning（仍停在待确认）
+10. `action=planning_approve`：进入计划实施；实施完成后进入真实业务交付测试等待节点，不直接判定完成
+11. `action=continue_wait`：当返回 `NEEDS_USER_DECISION` 时，继续新的持续跟进周期
+12. `action=handoff_to_main`：当返回 `NEEDS_USER_DECISION` 时，转交主会话（自动取消并关闭 ACP 会话）
+13. `action=delivery_test_pass`：主会话已完成真实业务交付测试且测试通过，插件进入完成状态
+14. `action=delivery_test_fail`：主会话已完成真实业务交付测试但测试失败，必须提供失败材料，插件进入整改闭环
+15. `action=remediation_approve`：用户确认整改方案和整改计划后，进入当前整改实施
+16. `action=cancel_follow_up`：完成 3 次整改后仍未通过时，用户取消后续工作，本次任务不声明交付完成
 
 返回结果会包含：
 
@@ -71,6 +75,7 @@ ACP 实施完成只代表代码实施阶段结束，不代表任务已经交付�
 
 1. 先在主对话完成起始阶段判定，再调用 `delegate.task.execute(action=start)`。
 2. 判定不明确时，用 `start_phase=need_user_input` + `missing_context` 明确向用户索取必要信息。
+3. 开发类型判定不明确时，用 `development_type=need_user_input` + `missing_context` 明确向用户索取新增功能或 BUG 修改信息。
 
 起点判定规则（主对话模型决策）：
 
@@ -78,6 +83,14 @@ ACP 实施完成只代表代码实施阶段结束，不代表任务已经交付�
 2. 不使用“置信度阈值”作为外部接口语义；只返回明确下一步。
 3. 当主对话模型判断信息不足、上下文冲突或模棱两可时，统一返回 `NEEDS_USER_INPUT` 并要求补充最小必要上下文。
 4. 插件不做“本地穷举判定”或“ACP 二次判定”来替代主对话结论，只负责编排执行。
+
+开发类型判定规则（主对话模型决策）：
+
+1. 主对话模型根据用户需求和上下文返回唯一开发类型：`feature` / `bugfix` / `need_user_input`。
+2. `feature` 表示新增功能或业务流程调整，Design / Planning 使用可交付开发设计/计划指南。
+3. `bugfix` 表示修复已有能力的错误表现，Design / Planning 使用可交付 BUG 修改设计/计划指南。
+4. 当主对话无法明确判断新增功能或 BUG 修改时，返回 `need_user_input`，由用户补充后重试。
+5. 插件不通过关键词穷举判断开发类型，只根据主会话传入的 `development_type` 选择文档规则。
 
 Design/Planning 执行方规则：
 

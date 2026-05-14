@@ -12,4 +12,16 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("优先调用 `action=continue_wait`");
     expect(skill).toContain("禁止把继续任务当成新任务重新 `start`");
   });
+
+  it("must require main-dialog development type judgement before start", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("开发类型");
+    expect(skill).toContain("development_type");
+    expect(skill).toContain("feature");
+    expect(skill).toContain("bugfix");
+    expect(skill).toContain("need_user_input");
+    expect(skill).toContain("禁止在插件内部通过关键词穷举判断开发类型");
+    expect(skill).toContain("BUG 修改必须使用 BUG 修改设计和计划指南");
+  });
 });
