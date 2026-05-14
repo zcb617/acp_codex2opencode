@@ -48,6 +48,7 @@ npm run plugin:install-local
 ```
 
 该命令会同时完成插件安装和 `team-delegate` 技能安装（目标：`~/.codex/skills/team-delegate`）。
+四份 Design / Planning 指南会随技能安装到 `~/.codex/skills/team-delegate/docs/`，运行时必须读取这里的插件指南，不能读取用户项目目录下的 `docs/` 或 `docs/superpowers/` 作为指南。
 同时会写入 MCP 兜底配置（`[mcp_servers.acp_codex2opencode_plugin]`），并注入：
 
 1. `OPENCODE_CONFIG_CONTENT={"permission":"allow","model":"llm-router-openai-compatible/kimi-for-roo"}`  
@@ -62,7 +63,12 @@ npm run plugin:install-local
 
 1. 插件列表可见并启用 `acp-codex2opencode`（显示名 `ACP Delegate Bridge`）。
 2. 技能文件存在：`~/.codex/skills/team-delegate/SKILL.md`。
-3. 工具可见：
+3. 四份指南存在：
+   - `~/.codex/skills/team-delegate/docs/可交付开发设计文档编写指南-v0.1.md`
+   - `~/.codex/skills/team-delegate/docs/可交付开发计划编写指南-v0.1.md`
+   - `~/.codex/skills/team-delegate/docs/可交付BUG修改设计文档编写指南-v0.1.md`
+   - `~/.codex/skills/team-delegate/docs/可交付BUG修改计划编写指南-v0.1.md`
+4. 工具可见：
    - `delegate.task.execute`
    - `delegate.session.init`
    - `delegate.turn.run`

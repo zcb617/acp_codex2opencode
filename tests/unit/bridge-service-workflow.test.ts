@@ -866,9 +866,15 @@ describe("bridge workflow approvals", () => {
     const designPrompt = hacked.buildDesignPrompt("实现一个功能", undefined, "feature");
     const planningPrompt = hacked.buildPlanningPrompt("实现一个功能", undefined, "feature");
 
+    expect(designPrompt).toContain("插件 skill 自带指南文档");
+    expect(designPrompt).toContain("team-delegate");
+    expect(designPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
     expect(designPrompt).toContain("可交付开发设计文档编写指南");
     expect(designPrompt).toContain("## 背景与目标");
     expect(designPrompt).toContain("## 开发实施规范");
+    expect(planningPrompt).toContain("插件 skill 自带指南文档");
+    expect(planningPrompt).toContain("team-delegate");
+    expect(planningPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
     expect(planningPrompt).toContain("可交付开发计划编写指南");
     expect(planningPrompt).toContain("## 项目与目标");
     expect(planningPrompt).toContain("## 最终交付清单");
@@ -884,10 +890,16 @@ describe("bridge workflow approvals", () => {
     const designPrompt = hacked.buildDesignPrompt("修复恢复后找不到委派流程的问题", undefined, "bugfix");
     const planningPrompt = hacked.buildPlanningPrompt("修复恢复后找不到委派流程的问题", undefined, "bugfix");
 
+    expect(designPrompt).toContain("插件 skill 自带指南文档");
+    expect(designPrompt).toContain("team-delegate");
+    expect(designPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
     expect(designPrompt).toContain("可交付BUG修改设计文档编写指南");
     expect(designPrompt).toContain("## 失败事实");
     expect(designPrompt).toContain("## 交付测试目标");
     expect(designPrompt).not.toContain("## SLO 与告警");
+    expect(planningPrompt).toContain("插件 skill 自带指南文档");
+    expect(planningPrompt).toContain("team-delegate");
+    expect(planningPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
     expect(planningPrompt).toContain("可交付BUG修改计划编写指南");
     expect(planningPrompt).toContain("## TDD 与红灯测试计划");
     expect(planningPrompt).toContain("## 真实业务交付测试计划");
@@ -921,9 +933,15 @@ describe("bridge workflow approvals", () => {
 
     expect(startAgain.success).toBe(true);
     expect((startAgain.data as { detected_development_type: string }).detected_development_type).toBe("bugfix");
-    expect((startAgain.data as { document_profile: { design_guide: string } }).document_profile.design_guide).toContain(
+    const documentProfile = (startAgain.data as {
+      document_profile: { guide_source: string; design_guide: string; design_guide_relative_path: string };
+    }).document_profile;
+    expect(documentProfile.guide_source).toBe("team-delegate skill docs");
+    expect(documentProfile.design_guide).toContain("team-delegate");
+    expect(documentProfile.design_guide).toContain(
       "可交付BUG修改设计文档编写指南"
     );
+    expect(documentProfile.design_guide_relative_path).toBe("docs/可交付BUG修改设计文档编写指南-v0.1.md");
   });
 
   it("should skip design and start from planning when design doc exists in context", async () => {

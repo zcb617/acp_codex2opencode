@@ -12,6 +12,12 @@ const MARKETPLACE_DISPLAY_NAME = "ACP Local Plugins";
 const SKILL_NAME = "team-delegate";
 const MCP_SERVER_ID = "acp_codex2opencode_plugin";
 const DEFAULT_WORKFLOW_MODEL = "llm-router-openai-compatible/kimi-for-roo";
+const GUIDE_FILES = [
+  "可交付开发设计文档编写指南-v0.1.md",
+  "可交付开发计划编写指南-v0.1.md",
+  "可交付BUG修改设计文档编写指南-v0.1.md",
+  "可交付BUG修改计划编写指南-v0.1.md"
+];
 const DEFAULT_OPENCODE_CONFIG_CONTENT = JSON.stringify({
   permission: "allow",
   model: DEFAULT_WORKFLOW_MODEL
@@ -169,6 +175,9 @@ async function main() {
   await access(path.join(projectRoot, ".codex-plugin", "plugin.json"), constants.F_OK);
   await access(path.join(projectRoot, "package.json"), constants.F_OK);
   await access(path.join(sourceSkillDir, "SKILL.md"), constants.F_OK);
+  for (const guideFile of GUIDE_FILES) {
+    await access(path.join(sourceSkillDir, "docs", guideFile), constants.F_OK);
+  }
 
   console.log("[B/8] 构建插件...");
   if (!skipNpmInstall) {
@@ -232,6 +241,9 @@ async function main() {
   await access(path.join(projectRoot, "dist", "plugin", "mcp-server.js"), constants.F_OK);
   await access(marketplaceManifestPath, constants.F_OK);
   await access(path.join(targetSkillDir, "SKILL.md"), constants.F_OK);
+  for (const guideFile of GUIDE_FILES) {
+    await access(path.join(targetSkillDir, "docs", guideFile), constants.F_OK);
+  }
 
   console.log("[H/8] 完成。请重启 Codex，然后在插件列表确认已启用。");
   console.log("INSTALLATION-COMPLETED");

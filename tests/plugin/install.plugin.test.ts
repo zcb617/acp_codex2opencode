@@ -1,8 +1,14 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = join(import.meta.dirname, "..", "..");
+const guideFiles = [
+  "可交付开发设计文档编写指南-v0.1.md",
+  "可交付开发计划编写指南-v0.1.md",
+  "可交付BUG修改设计文档编写指南-v0.1.md",
+  "可交付BUG修改计划编写指南-v0.1.md"
+];
 
 describe("PT-01 plugin install contract", () => {
   it("should provide a valid plugin manifest and mcp config path", async () => {
@@ -71,5 +77,16 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).not.toContain("沉默窗口");
     expect(skill).not.toContain("沉默监控");
     expect(skill).not.toContain("建议检查时间");
+  });
+
+  it("should package all design and planning guide docs with the team-delegate skill", async () => {
+    const skillDocsDir = join(root, "skills", "team-delegate", "docs");
+
+    for (const guideFile of guideFiles) {
+      const guidePath = join(skillDocsDir, guideFile);
+      await expect(access(guidePath)).resolves.toBeUndefined();
+      const guide = await readFile(guidePath, "utf8");
+      expect(guide.trim().length).toBeGreaterThan(1000);
+    }
   });
 });

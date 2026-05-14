@@ -36,6 +36,17 @@ description: Use only when the user explicitly asks for delegation workflow/team
 6. 实施阶段必须使用“持续跟进”“暂无新的可汇报进展”“超过约定时间仍无进展”等业务表达；禁止向用户使用开发导向的进度查看表达。
 </BUSINESS-FIRST-OUTPUT>
 
+<GUIDE-DOCS>
+Design / Planning 阶段必须读取本 skill 自带 `docs/` 目录里的对应指南。指南是插件资源，不是用户项目资源。
+
+1. 新增功能方案读取 `docs/可交付开发设计文档编写指南-v0.1.md`。
+2. 新增功能计划读取 `docs/可交付开发计划编写指南-v0.1.md`。
+3. BUG 修改方案读取 `docs/可交付BUG修改设计文档编写指南-v0.1.md`。
+4. BUG 修改计划读取 `docs/可交付BUG修改计划编写指南-v0.1.md`。
+5. 禁止把用户项目目录下的 `docs/` 或 `docs/superpowers/` 当成插件指南。
+6. 禁止用提示词摘要替代指南原文；必须先读取对应指南文档，再按指南编写方案或计划。
+</GUIDE-DOCS>
+
 ## 触发条件
 
 用户出现以下任一语义时触发（必须是“明确委派语义”）：
@@ -59,7 +70,7 @@ description: Use only when the user explicitly asks for delegation workflow/team
 2. **插件管流程，模型不越级。** 模型不得跳过插件直接进入本地实现。
 3. **阶段和开发类型判定由主对话模型完成，插件只编排。** 插件不替代主对话做阶段决策，也不通过关键词穷举猜开发类型。
 4. **模棱两可即不满足。** 当主对话无法明确判定阶段或开发类型时，必须使用 `need_user_input`，禁止猜测。
-5. **开发类型决定文档规则。** `feature` 使用新增功能设计和计划指南；`bugfix` 使用 BUG 修改设计和计划指南。BUG 修改必须使用 BUG 修改设计和计划指南。
+5. **开发类型决定文档规则。** `feature` 使用新增功能设计和计划指南；`bugfix` 使用 BUG 修改设计和计划指南。BUG 修改必须使用 BUG 修改设计和计划指南；四份指南都必须从本 skill 自带 `docs/` 目录读取。
 6. **只有计划实施阶段才需要选择 ACP 执行模型。** 方案制定、计划制定默认由主会话执行，不触发模型选择；只有用户明确选择 ACP 执行方案/计划时才需要模型。
 7. **一切推进看返回状态，但对用户表达必须看业务语义。** 下一步只允许执行 `next_action_required` 里的动作；对用户说明时优先使用 `business_stage` / `user_message` / `next_business_action`。
 8. **不要主动传短超时。** 正常业务流程不要传 `timeout_ms`；除非用户明确要求限制等待时间，否则让插件使用安装时配置的长轮次超时。

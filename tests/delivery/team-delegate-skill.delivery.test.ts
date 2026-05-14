@@ -24,4 +24,13 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("禁止在插件内部通过关键词穷举判断开发类型");
     expect(skill).toContain("BUG 修改必须使用 BUG 修改设计和计划指南");
   });
+
+  it("must read plugin-owned guide docs instead of project docs", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("必须读取本 skill 自带 `docs/` 目录里的对应指南");
+    expect(skill).toContain("禁止把用户项目目录下的 `docs/` 或 `docs/superpowers/` 当成插件指南");
+    expect(skill).toContain("新增功能方案读取 `docs/可交付开发设计文档编写指南-v0.1.md`");
+    expect(skill).toContain("BUG 修改计划读取 `docs/可交付BUG修改计划编写指南-v0.1.md`");
+  });
 });
