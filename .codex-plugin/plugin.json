@@ -1,0 +1,41 @@
+{
+  "name": "acp-codex2opencode",
+  "version": "0.1.0",
+  "description": "Codex plugin for OpenCode ACP delegation closed-loop",
+  "author": {
+    "name": "codex",
+    "email": "noreply@example.com",
+    "url": "https://example.com"
+  },
+  "homepage": "https://example.com/acp-codex2opencode",
+  "repository": "https://example.com/acp-codex2opencode.git",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "acp",
+    "delegation",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "ACP Delegate Bridge",
+    "shortDescription": "OpenCode ACP delegated closed-loop execution for Codex.",
+    "longDescription": "Provides session initialization, multi-turn delegation, rework loops, model switching, cancellation, and close operations via MCP tools.",
+    "developerName": "Codex",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Write",
+      "Interactive"
+    ],
+    "websiteURL": "https://example.com",
+    "privacyPolicyURL": "https://example.com/privacy",
+    "termsOfServiceURL": "https://example.com/terms",
+    "defaultPrompt": [
+      "先在主对话判定起始阶段（design/planning/implementation/need_user_input），再调用 ACP Delegate Bridge 的 `delegate.task.execute`（action=start）。",
+      "调用 start 时必须带上 `start_phase`，并先完成模型闸门（NEEDS_MODEL_CONFIRM/NEEDS_MODEL_SELECTION -> model_confirm/model_select）。",
+      "只按 `workflow_status` 与 `next_action_required` 推进到可交付，不要越级跳步骤。"
+    ],
+    "brandColor": "#0B6E4F"
+  }
+}

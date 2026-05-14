@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "acp-codex2opencode": {
+      "command": "node",
+      "args": [
+        "./dist/plugin/mcp-server.js"
+      ],
+      "env": {
+        "OPENCODE_BIN_PATH": "opencode",
+        "ACP_BRIDGE_STATE_DIR": "./runtime",
+        "ACP_BRIDGE_LOG_DIR": "./runtime/logs",
+        "ACP_BRIDGE_LOG_LEVEL": "INFO",
+        "ACP_BRIDGE_TURN_TIMEOUT_MS": "86400000",
+        "ACP_BRIDGE_WORKFLOW_SYNC_WAIT_MS": "180000",
+        "ACP_BRIDGE_MAX_PARALLEL_SESSIONS": "20",
+        "ACP_BRIDGE_ALLOWED_WORKSPACES": "",
+        "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"model\":\"llm-router-openai-compatible/kimi-for-roo\"}"
+      }
+    }
+  }
+}

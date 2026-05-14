@@ -1,0 +1,791 @@
+import { describe, expect, it, vi } from "vitest";
+import { createLogger } from "../../src/observability/logger.js";
+import { MetricsRegistry } from "../../src/observability/metrics.js";
+import { BridgeService } from "../../src/session/bridge-service.js";
+import { ErrorCodes } from "../../src/shared/error-codes.js";
+
+const START_FROM_DESIGN_REQUIREMENT = "请从设计阶段开始，需求如下：实现一个功能。";
+
+const DESIGN_SECTIONS_TEXT = [
+  "背景与目标",
+  "非目标",
+  "范围与术语",
+  "架构与模块职责",
+  "技术选型与约束",
+  "API 契约",
+  "数据模型",
+  "主流程与状态机",
+  "异常处理策略矩阵",
+  "幂等与去重规则",
+  "测试策略",
+  "验收标准",
+  "发布与回滚 Runbook",
+  "SLO 与告警",
+  "环境配置矩阵",
+  "开发实施规范"
+].join("\n");
+
+const PLANNING_SECTIONS_TEXT = [
+  "项目与目标",
+  "硬约束",
+  "范围与非范围",
+  "交付完成定义",
+  "业务交付场景",
+  "自测命令",
+  "失败修复与复测机制",
+  "技术设计与模块边界",
+  "API、数据模型与配置",
+  "开发任务拆分",
+  "测试策略",
+  "需求到验收映射",
+  "最终交付清单"
+].join("\n");
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function mockBridgeService(options?: { workflowSyncWaitMs?: number; turnTimeoutMs?: number }): BridgeService {
+  const service = new BridgeService(
+    {
+      opencodeBinPath: "opencode",
+      stateDir: "D:/tmp/acp-workflow-test",
+      turnTimeoutMs: options?.turnTimeoutMs ?? 30_000,
+      workflowSyncWaitMs: options?.workflowSyncWaitMs ?? 300
+    },
+    createLogger("ERROR"),
+    new MetricsRegistry()
+  );
+
+  const hacked = service as unknown as Record<string, unknown>;
+  hacked.audit = vi.fn(async () => undefined);
+  hacked.initSession = vi.fn(async () => ({
+    request_id: "req_init",
+    success: true,
+    data: {
+      bridge_session_id: "bs_001"
+    }
+  }));
+  hacked.executeTurn = vi.fn(async (_turnType: string, _bridgeSessionId: string, idemKey: string, prompt: string) => ({
+    request_id: `req_${idemKey}`,
+    success: true,
+    data: {
+      turn_id: idemKey,
+      stop_reason: "end_turn",
+      summary: prompt
+    }
+  }));
+  hacked.enforceDocumentGate = vi.fn(async () => ({
+    passed: true,
+    attempts: 1,
+    missingSections: []
+  }));
+  hacked.hasDoneSignal = vi.fn(async () => true);
+  hacked.close = vi.fn(async () => ({
+    request_id: "req_close",
+    success: true,
+    data: {
+      closed: true
+    }
+  }));
+  hacked.cancel = vi.fn(async () => ({
+    request_id: "req_cancel",
+    success: true,
+    data: {
+      cancelled: true
+    }
+  }));
+  hacked.selectInitialWorkflowModel = vi.fn(async (workflow: Record<string, unknown>) => {
+    workflow.activeModel = "llm-router-openai-compatible/kimi-for-roo";
+    workflow.fallbackModels = ["llm-router-openai-responses/gpt-5.4-mini"];
+  });
+  hacked.setWorkflowAgentMode = vi.fn(async (workflow: Record<string, unknown>, mode: string) => {
+    workflow.activeAgentMode = mode;
+  });
+  hacked.listConfiguredModelsFromOpencode = vi.fn(() => [
+    "llm-router-openai-compatible/kimi-for-roo",
+    "llm-router-openai-responses/gpt-5.4-mini"
+  ]);
+  hacked.readWorkspacePreferredModel = vi.fn(async () => "llm-router-openai-compatible/kimi-for-roo");
+  hacked.saveWorkspacePreferredModel = vi.fn(async () => undefined);
+  return service;
+}
+
+function mockBridgeServiceWithRuntimeDefaults(): BridgeService {
+  const service = new BridgeService(
+    {
+      opencodeBinPath: "opencode",
+      stateDir: "D:/tmp/acp-workflow-test",
+      turnTimeoutMs: 30_000
+    },
+    createLogger("ERROR"),
+    new MetricsRegistry()
+  );
+
+  const hacked = service as unknown as Record<string, unknown>;
+  hacked.initSession = vi.fn(async () => ({
+    request_id: "req_init",
+    success: true,
+    data: {
+      bridge_session_id: "bs_001"
+    }
+  }));
+  hacked.selectInitialWorkflowModel = vi.fn(async (workflow: Record<string, unknown>) => {
+    workflow.activeModel = "llm-router-openai-compatible/kimi-for-roo";
+    workflow.fallbackModels = ["llm-router-openai-responses/gpt-5.4-mini"];
+  });
+  hacked.setWorkflowAgentMode = vi.fn(async (workflow: Record<string, unknown>, mode: string) => {
+    workflow.activeAgentMode = mode;
+  });
+  return service;
+}
+
+async function startAndConfirmModel(
+  service: BridgeService,
+  input: {
+    workspace_path: string;
+    requirement_text: string;
+    session_alias: string;
+    start_phase?: "design" | "planning" | "implementation" | "need_user_input";
+    start_phase_evidence?: string[];
+    missing_context?: string[];
+    design_planning_executor?: "main" | "acp";
+  }
+): Promise<Awaited<ReturnType<BridgeService["executeTask"]>>> {
+  const start = await service.executeTask({
+    ...input,
+    action: "start"
+  });
+  expect(start.success).toBe(true);
+  expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
+
+  return service.executeTask({
+    ...input,
+    action: "model_confirm",
+    model_confirm_choice: "use_saved_model"
+  });
+}
+
+describe("bridge workflow approvals", () => {
+  it("should default the first synchronous workflow wait window to 3 minutes", async () => {
+    const service = mockBridgeServiceWithRuntimeDefaults();
+
+    const workflow = await (
+      service as unknown as {
+        startWorkflow: (
+          input: Record<string, unknown>,
+          sessionAlias: string,
+          timeoutMs: number | undefined,
+          detectedStartPhase: string,
+          detectionEvidence: string[]
+        ) => Promise<{ syncWaitMs: number }>;
+      }
+    ).startWorkflow(
+      {
+        workspace_path: "D:/workspace",
+        requirement_text: "设计和计划已经确认，可以直接进入实施。",
+        session_alias: "sync-wait-default",
+        start_phase: "implementation"
+      },
+      "sync-wait-default",
+      undefined,
+      "implementation",
+      []
+    );
+
+    expect(workflow.syncWaitMs).toBe(180_000);
+  });
+
+  it("should recognize done status when ACP streams the status marker in fragments", async () => {
+    const service = mockBridgeServiceWithRuntimeDefaults();
+    const hacked = service as unknown as {
+      collectTurnOutputText: () => Promise<string>;
+      hasDoneSignal: (result: { success: boolean; data?: { turn_id?: string } }) => Promise<boolean>;
+    };
+    hacked.collectTurnOutputText = vi.fn(async () => "STAT\nUS\n:\n D\nONE");
+
+    await expect(
+      hacked.hasDoneSignal({
+        success: true,
+        data: {
+          turn_id: "turn_fragmented_done"
+        }
+      })
+    ).resolves.toBe(true);
+  });
+
+  it("should keep design in the main session without asking for an ACP model", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as Record<string, unknown>;
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-business-design",
+      action: "start",
+      start_phase: "design",
+      start_phase_reason: "用户还没有方案，需要先制定方案。"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_DESIGN");
+    expect((start.data as { business_stage: string }).business_stage).toBe("方案制定");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("主会话");
+    expect((start.data as { next_action_required: string[] }).next_action_required).not.toContain("model_select");
+    expect(hacked.listConfiguredModelsFromOpencode as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it("should keep planning in the main session without asking for an ACP model", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as Record<string, unknown>;
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: `以下是方案内容：\n${DESIGN_SECTIONS_TEXT}`,
+      session_alias: "task-business-planning",
+      action: "start",
+      start_phase: "planning",
+      start_phase_reason: "当前已经有方案，但还没有计划。"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_PLANNING");
+    expect((start.data as { business_stage: string }).business_stage).toBe("计划制定");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("主会话");
+    expect((start.data as { next_action_required: string[] }).next_action_required).not.toContain("model_select");
+    expect(hacked.listConfiguredModelsFromOpencode as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it("should ask for a model with business-oriented wording only when entering implementation", async () => {
+    const service = mockBridgeService();
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: `方案：\n${DESIGN_SECTIONS_TEXT}\n\n计划：\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-business-implementation",
+      action: "start",
+      start_phase: "implementation",
+      start_phase_reason: "当前已经有方案和计划，用户确认可以进入实施。"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
+    expect((start.data as { business_stage: string }).business_stage).toBe("计划实施");
+    expect((start.data as { user_message: string }).user_message).toContain("当前已经有了");
+    expect((start.data as { user_message: string }).user_message).toContain("计划实施");
+    expect((start.data as { user_message: string }).user_message).toContain("选择执行模型");
+  });
+
+  it("should block planning approve before design approve", async () => {
+    const service = mockBridgeService();
+    const start = await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-001",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("WAITING_DESIGN_APPROVAL");
+    expect((start.data as { current_model?: string }).current_model).toBe(
+      "llm-router-openai-compatible/kimi-for-roo"
+    );
+    expect((start.data as { current_agent_mode?: string }).current_agent_mode).toBe("plan");
+
+    const invalid = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-001",
+      action: "planning_approve"
+    });
+    expect(invalid.success).toBe(false);
+    expect(invalid.error?.code).toBe(ErrorCodes.WORKFLOW_INVALID_TRANSITION);
+  });
+
+  it("should complete after design and planning approvals", async () => {
+    const service = mockBridgeService();
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+
+    const planning = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002",
+      action: "design_approve"
+    });
+    expect(planning.success).toBe(true);
+    expect((planning.data as { workflow_status: string }).workflow_status).toBe("WAITING_PLAN_APPROVAL");
+
+    const done = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002",
+      action: "planning_approve"
+    });
+    expect(done.success).toBe(true);
+    expect((done.data as { workflow_status: string }).workflow_status).toBe("COMPLETED");
+    expect((done.data as { workflow_completed: boolean }).workflow_completed).toBe(true);
+    expect((done.data as { current_model?: string }).current_model).toBe(
+      "llm-router-openai-compatible/kimi-for-roo"
+    );
+    expect((done.data as { current_agent_mode?: string }).current_agent_mode).toBe("build");
+  });
+
+  it("should not let a short action timeout kill delegated implementation turns", async () => {
+    const service = mockBridgeService({ turnTimeoutMs: 86_400_000 });
+    const input = {
+      workspace_path: "D:/repo",
+      requirement_text: "设计和计划已经确认，直接进入实施。创建 delivery-result.md。",
+      session_alias: "task-short-timeout",
+      start_phase: "implementation" as const
+    };
+
+    const start = await service.executeTask({
+      ...input,
+      action: "start"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
+
+    const done = await service.executeTask({
+      ...input,
+      action: "model_confirm",
+      model_confirm_choice: "use_saved_model",
+      timeout_ms: 30_000
+    });
+
+    expect(done.success).toBe(true);
+    expect((done.data as { workflow_status: string }).workflow_status).toBe("COMPLETED");
+    const executeTurn = (service as unknown as { executeTurn: ReturnType<typeof vi.fn> }).executeTurn;
+    const implementationCall = executeTurn.mock.calls.find((call) => call[2]?.includes("implementation"));
+    expect(implementationCall?.[4]).toBe(86_400_000);
+  });
+
+  it("should return running status first and then switch to review when phase completes", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 20 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(80);
+      workflow.phaseGates = {
+        design: {
+          passed: true,
+          attempts: 1,
+          missingSections: []
+        }
+      };
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+
+    const start = await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-003",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+
+    await sleep(120);
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-003",
+      action: "status"
+    });
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("WAITING_DESIGN_APPROVAL");
+  });
+
+  it("should require user decision after silence timeout and support continue/handoff actions", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+
+    const start = await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-004",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-004");
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 1_000;
+    workflow!.lastProgressAtMs = Date.now() - 10_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    let status: Awaited<ReturnType<BridgeService["executeTask"]>> | undefined;
+    status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-004",
+      action: "status"
+    });
+    expect(status?.success).toBe(true);
+    expect((status?.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_DECISION");
+    expect((status?.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "continue_wait",
+      "handoff_to_main"
+    ]);
+
+    const cont = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-004",
+      action: "continue_wait"
+    });
+    expect(cont.success).toBe(true);
+    expect((cont.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const continuedStatus = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-004",
+      action: "status"
+    });
+    expect(continuedStatus.success).toBe(true);
+    expect((continuedStatus.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+
+    const handoff = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-004",
+      action: "handoff_to_main"
+    });
+    expect(handoff.success).toBe(true);
+    expect((handoff.data as { workflow_status: string }).workflow_status).toBe("TRANSFERRED_TO_MAIN");
+  });
+
+  it("should keep waiting and return progress when ACP emits output before silence timeout", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: true,
+      text: "正在检查项目结构，准备修改状态返回逻辑。",
+      eventCount: 1
+    }));
+
+    const start = await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-progress-001",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-progress-001");
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10;
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-progress-001",
+      action: "status"
+    });
+
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+    expect((status.data as { progress_update: { has_new_output: boolean; text: string } }).progress_update).toMatchObject({
+      has_new_output: true,
+      text: "正在检查项目结构，准备修改状态返回逻辑。"
+    });
+  });
+
+  it("should ask for user decision only after ACP stays silent beyond the silence timeout", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: "",
+      eventCount: 0
+    }));
+
+    const start = await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-progress-002",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+    expect(start.success).toBe(true);
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-progress-002");
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10;
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-progress-002",
+      action: "status"
+    });
+
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_DECISION");
+  });
+
+  it("should clear user-decision state when ACP outputs progress while waiting", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: true,
+      text: "已完成初步修改，正在运行测试。",
+      eventCount: 1
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-progress-003",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-progress-003");
+    expect(workflow).toBeDefined();
+    workflow!.stage = "NEEDS_USER_DECISION";
+    workflow!.activePhase = "design";
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-progress-003",
+      action: "status"
+    });
+
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+    expect((status.data as { progress_update: { text: string } }).progress_update.text).toBe(
+      "已完成初步修改，正在运行测试。"
+    );
+  });
+
+  it("should expose a required 1-2 minute follow-up window instead of a fixed interval", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: "",
+      eventCount: 0
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-progress-004",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-progress-004");
+    expect(workflow).toBeDefined();
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-progress-004",
+      action: "status"
+    });
+
+    expect(status.success).toBe(true);
+    expect(
+      (status.data as { follow_up_policy: { interval_min_seconds: number } }).follow_up_policy
+        .interval_min_seconds
+    ).toBe(60);
+    expect(
+      (status.data as { follow_up_policy: { interval_max_seconds: number } }).follow_up_policy
+        .interval_max_seconds
+    ).toBe(120);
+    expect((status.data as { follow_up_policy: { guidance: string } }).follow_up_policy.guidance).toContain(
+      "必须满足 1-2 分钟持续跟进节奏"
+    );
+  });
+
+  it("should hold early status checks until the required follow-up time", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: "",
+      eventCount: 0
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-follow-up-gate",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-follow-up-gate");
+    expect(workflow).toBeDefined();
+    workflow!.nextPollDueAtMs = Date.now() + 45;
+
+    const startedAt = Date.now();
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-follow-up-gate",
+      action: "status"
+    });
+
+    expect(status.success).toBe(true);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(35);
+    expect(hacked.collectWorkflowProgressDelta as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+  });
+
+  it("should require user input when context cannot determine start phase", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 20 });
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "实现需求",
+      session_alias: "task-005",
+      action: "start",
+      start_phase: "need_user_input",
+      start_phase_evidence: ["mock-detection:missing-context"],
+      missing_context: ["design_doc", "plan_doc"]
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
+    expect((start.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "provide_context_then_restart"
+    ]);
+  });
+
+  it("should not call ACP stage detection when start_phase is missing", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.detectWorkflowEntry = vi.fn(async () => ({
+      phase: "design",
+      evidence: ["should-not-run"],
+      missingContext: []
+    }));
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "实现需求",
+      session_alias: "task-005-b",
+      action: "start",
+      start_phase: "need_user_input",
+      missing_context: ["start_phase（design/planning/implementation/need_user_input）"]
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
+    expect((hacked.detectWorkflowEntry as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    expect((hacked.initSession as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it("should skip design and start from planning when design doc exists in context", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 500 });
+    const start = await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `以下是设计文档章节：\n${DESIGN_SECTIONS_TEXT}`,
+      session_alias: "task-006",
+      start_phase: "planning",
+      design_planning_executor: "acp"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { detected_start_phase: string }).detected_start_phase).toBe("planning");
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("WAITING_PLAN_APPROVAL");
+  });
+
+  it("should skip to implementation when design and planning docs both exist", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 500 });
+    const start = await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-007",
+      start_phase: "implementation"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { detected_start_phase: string }).detected_start_phase).toBe("implementation");
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("COMPLETED");
+  });
+
+  it("should default to main-session design execution when start phase is design", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as Record<string, unknown>;
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-008",
+      action: "start",
+      start_phase: "design"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_DESIGN");
+    expect((start.data as { default_option: string }).default_option).toBe("1");
+    expect(hacked.initSession).not.toHaveBeenCalled();
+  });
+
+  it("should default to main-session planning execution when start phase is planning", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as Record<string, unknown>;
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: `以下是设计文档章节：\n${DESIGN_SECTIONS_TEXT}`,
+      session_alias: "task-009",
+      action: "start",
+      start_phase: "planning"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_PLANNING");
+    expect((start.data as { default_option: string }).default_option).toBe("1");
+    expect(hacked.initSession).not.toHaveBeenCalled();
+  });
+});

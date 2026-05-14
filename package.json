@@ -1,0 +1,37 @@
+{
+  "name": "acp-codex2opencode-plugin",
+  "version": "0.1.0",
+  "description": "Codex plugin for OpenCode ACP delegation closed-loop workflows",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "npm run typecheck",
+    "test": "vitest run --passWithNoTests",
+    "test:unit": "vitest run tests/unit --passWithNoTests",
+    "test:integration": "vitest run tests/integration --passWithNoTests",
+    "test:e2e": "vitest run tests/integration/e2e --passWithNoTests",
+    "test:plugin-install": "vitest run tests/plugin/install.plugin.test.ts tests/plugin/install-runbook.plugin.test.ts --passWithNoTests",
+    "test:plugin-e2e": "vitest run tests/plugin/lifecycle.plugin.test.ts tests/plugin/rollback.plugin.test.ts --passWithNoTests",
+    "test:delivery": "vitest run tests/delivery --passWithNoTests",
+    "dev:server": "node --enable-source-maps dist/plugin/mcp-server.js",
+    "prepare:plugin": "npm run build && node scripts/prepare-plugin.cjs",
+    "plugin:install-local": "node scripts/install-local.mjs",
+    "plugin:uninstall-local": "node scripts/uninstall-local.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^6.0.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

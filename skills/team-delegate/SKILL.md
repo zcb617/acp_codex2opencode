@@ -1,0 +1,222 @@
+---
+name: team-delegate
+description: Use only when the user explicitly asks for delegation workflow/team mode (team-delegate, 委派, delegation, Design->Planning->Implementation orchestration) and wants plugin orchestration instead of manual API filling.
+---
+
+# Team Delegate
+
+将委派流程交给插件状态机。模型只负责理解需求与对话；流程推进由 `delegate.task.execute` 驱动。
+
+<HARD-GATE>
+在进入委派编码前，必须先完成“主对话阶段判定 -> start 入场”闭环。禁止做以下动作：
+1. 未完成阶段判定就直接调用 `delegate.task.execute(action=start)`。
+2. 在 `start` 返回前先创建分支、先改代码、先运行实现命令（编译/测试/截图/启动客户端）。
+3. 调用 `delegate.session.*` / `delegate.turn.*` 低层工具绕过高层入口。
+4. 在 `start` 返回后不按 `workflow_status` / `next_action_required` 推进，私自跳步骤。
+</HARD-GATE>
+
+<PHASE-JUDGEMENT-FIRST>
+触发本技能后：
+1. 先在主对话内基于上下文判定业务阶段：方案制定（`design`）/ 计划制定（`planning`）/ 计划实施（`implementation`）/ 需要补充上下文（`need_user_input`）。
+2. 判定结果必须随 `start_phase` 传入 `delegate.task.execute(action=start)`。
+3. 若主对话无法明确判定，必须使用 `start_phase=need_user_input` 并填写 `missing_context`，由用户补充后重试。
+</PHASE-JUDGEMENT-FIRST>
+
+<BUSINESS-FIRST-OUTPUT>
+所有面向用户的输出必须业务导向。
+
+1. 先说明当前业务阶段、判断依据和下一步业务动作。
+2. 禁止把 `workflow_status` / `current_stage` / `next_action_required` 作为用户首屏主提示。
+3. 内部状态字段只用于决定下一步工具调用；除非用户明确要求调试，否则不要主动展示。
+4. 用户看到的模型选择提示必须类似：“当前已经有了方案和计划，按约定可以直接进入计划实施阶段。请为本次计划实施选择执行模型。”
+5. 不要使用“委派实现模型”“MCP 工具”“内部参数”等开发者视角表达作为主提示。
+6. 实施阶段必须使用“持续跟进”“暂无新的可汇报进展”“超过约定时间仍无进展”等业务表达；禁止向用户使用开发导向的进度查看表达。
+</BUSINESS-FIRST-OUTPUT>
+
+## 触发条件
+
+用户出现以下任一语义时触发（必须是“明确委派语义”）：
+
+1. 明确说“委派/分派/team-delegate/team mode/delegation”，要求由插件编排。
+2. 明确说“Design -> Planning -> Implementation”流程要走闭环并等待审批。
+3. 明确说“不想手填 API 参数，由插件自动编排”。
+4. 明确说“继续某个已委派会话并整改”。
+5. "delegate this task / use delegation workflow / team-delegate"
+6. "run design -> planning -> implementation with approval gates"
+7. "continue previous delegated session with rework"
+8. "do not make me fill API params manually; orchestrate by plugin"
+
+兼容别名：
+
+1. `team-delegation-autopilot`
+
+## 铁律
+
+1. **先主对话判定阶段，再 start。** `start` 必须携带 `start_phase`。
+2. **插件管流程，模型不越级。** 模型不得跳过插件直接进入本地实现。
+3. **阶段判定由主对话模型完成，插件只编排。** 插件不替代主对话做阶段决策。
+4. **模棱两可即不满足。** 当主对话无法明确判定时，必须使用 `need_user_input`，禁止猜测阶段。
+5. **只有计划实施阶段才需要选择 ACP 执行模型。** 方案制定、计划制定默认由主会话执行，不触发模型选择；只有用户明确选择 ACP 执行方案/计划时才需要模型。
+6. **一切推进看返回状态，但对用户表达必须看业务语义。** 下一步只允许执行 `next_action_required` 里的动作；对用户说明时优先使用 `business_stage` / `user_message` / `next_business_action`。
+7. **不要主动传短超时。** 正常业务流程不要传 `timeout_ms`；除非用户明确要求限制等待时间，否则让插件使用安装时配置的长轮次超时。
+8. **实施阶段必须满足 1-2 分钟持续跟进节奏。** 这个节奏是硬性流程要求，不是可选项；未到下一次持续跟进时间，禁止提前向用户输出暂无进展。
+
+## 执行流程
+
+```dot
+digraph team_delegate_flow {
+  "Skill Triggered" [shape=doublecircle];
+  "Judge start phase in main dialog" [shape=box];
+  "Call delegate.task.execute(start)" [shape=box];
+  "Read workflow_status" [shape=diamond];
+  "NEEDS_MODEL_CONFIRM / NEEDS_MODEL_SELECTION" [shape=box];
+  "NEEDS_USER_INPUT" [shape=box];
+  "NEEDS_MAIN_DESIGN / NEEDS_MAIN_PLANNING" [shape=box];
+  "RUNNING_*" [shape=box];
+  "WAITING_*_APPROVAL" [shape=box];
+  "COMPLETED / FAILED / TRANSFERRED_TO_MAIN" [shape=doublecircle];
+
+  "Skill Triggered" -> "Judge start phase in main dialog";
+  "Judge start phase in main dialog" -> "Call delegate.task.execute(start)";
+  "Call delegate.task.execute(start)" -> "Read workflow_status";
+  "Read workflow_status" -> "NEEDS_MODEL_CONFIRM / NEEDS_MODEL_SELECTION";
+  "Read workflow_status" -> "NEEDS_USER_INPUT";
+  "Read workflow_status" -> "NEEDS_MAIN_DESIGN / NEEDS_MAIN_PLANNING";
+  "Read workflow_status" -> "RUNNING_*";
+  "Read workflow_status" -> "WAITING_*_APPROVAL";
+  "Read workflow_status" -> "COMPLETED / FAILED / TRANSFERRED_TO_MAIN";
+}
+```
+
+## 状态处理规则
+
+### 1) `NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION`
+
+0. 只有计划实施阶段默认会进入模型选择；方案制定/计划制定默认主会话执行，不要要求用户选择模型。
+1. `NEEDS_MODEL_CONFIRM`：用业务语言说明为什么现在需要模型，再给用户二选一（默认 1）
+   - `1` `model_confirm` + `model_confirm_choice=use_saved_model`
+   - `2` `model_confirm` + `model_confirm_choice=select_new_model`
+2. `NEEDS_MODEL_SELECTION`：用 `user_message` 或同义业务表达提示用户选择本次计划实施模型，展示 `available_models`，由用户选一个后调用 `model_select` 并传 `selected_model`。
+3. 完成模型确认/选择后才可进入下一阶段。
+
+### 2) `NEEDS_USER_INPUT`
+
+1. 仅要求用户补充上下文（文档内容或文档路径）。
+2. 不进入本地开发。
+3. 补充后重新 `action=start`。
+
+### 3) `NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING`
+
+1. 先明确说明当前处于方案制定或计划制定阶段，按约定由主会话执行，不需要选择 ACP 模型。
+2. 只给用户两项明确选择（默认 1）：
+   - `1` 主会话执行（默认）
+   - `2` ACP 委派执行（重新 `action=start` 且传 `design_planning_executor=acp`）
+3. 在用户选择前，不做任何本地实现动作。
+
+### 4) `RUNNING_DESIGN` / `RUNNING_PLANNING` / `RUNNING_IMPLEMENTATION`
+
+1. 先遵循同步窗口（由插件内部处理）。
+2. 然后必须按 `follow_up_policy.next_follow_up_at` 持续跟进；间隔必须落在 `follow_up_policy.interval_min_seconds` 到 `follow_up_policy.interval_max_seconds` 之间，当前要求是 1-2 分钟。
+3. 每次 `status` 返回后，先看 `progress_update.has_new_output`：
+   - 若为 `true`，用中文向用户输出一段简短进展总结，不粘贴完整原始过程。
+   - 若为 `true`，继续等待，不询问是否接手。
+   - 若为 `false` 且尚未进入 `NEEDS_USER_DECISION`，不得向用户输出暂无进展；继续按下一次持续跟进时间等待。
+4. 只有 ACP 超过 `follow_up_policy.no_progress_decision_seconds` 仍无新进展后进入 `NEEDS_USER_DECISION`，才给二选一：
+   - `continue_wait`
+   - `handoff_to_main`
+5. 用户选择 `continue_wait` 后，进入新的持续跟进周期；等待过程中只要 ACP 又输出内容，就恢复进展总结并清空旧的接手询问。
+
+### 5) `WAITING_DESIGN_APPROVAL`
+
+1. 用户反馈 -> `design_feedback`
+2. 用户批准 -> `design_approve`
+
+### 6) `WAITING_PLAN_APPROVAL`
+
+1. 用户反馈 -> `planning_feedback`
+2. 用户批准 -> `planning_approve`
+
+### 7) 终态
+
+1. `COMPLETED`：汇报完成与产出。
+2. `FAILED`：报告错误并给出下一步可执行动作（通常 `status` 或重启流程）。
+3. `TRANSFERRED_TO_MAIN`：确认已取消并关闭 ACP 会话，回到主会话处理。
+
+## 必用调用模板
+
+除非用户明确要求短超时，以下调用都不得添加 `timeout_ms`。
+
+首次入口（必须）：
+
+```json
+{
+  "workspace_path": "<当前工作目录>",
+  "requirement_text": "<用户原始需求>",
+  "session_alias": "<任务别名>",
+  "action": "start",
+  "start_phase": "<design|planning|implementation|need_user_input>",
+  "start_phase_reason": "<主对话判定理由，可选>",
+  "start_phase_evidence": ["<判定证据，可选>"],
+  "missing_context": ["<仅 need_user_input 时填写，可选>"],
+  "acceptance_criteria": "<验收标准，可选>",
+  "max_rework_rounds": 2,
+  "auto_close": true
+}
+```
+
+模型确认（历史模型可用时）：
+
+```json
+{
+  "workspace_path": "<当前工作目录>",
+  "requirement_text": "<用户原始需求>",
+  "session_alias": "<任务别名>",
+  "action": "model_confirm",
+  "model_confirm_choice": "use_saved_model"
+}
+```
+
+模型重选（无历史模型或用户改选）：
+
+```json
+{
+  "workspace_path": "<当前工作目录>",
+  "requirement_text": "<用户原始需求>",
+  "session_alias": "<任务别名>",
+  "action": "model_select",
+  "selected_model": "<provider/model>"
+}
+```
+
+用户选 ACP 执行 Design/Planning 时：
+
+```json
+{
+  "workspace_path": "<当前工作目录>",
+  "requirement_text": "<用户原始需求>",
+  "session_alias": "<同一任务别名>",
+  "action": "start",
+  "design_planning_executor": "acp"
+}
+```
+
+## 红旗（出现即停止并回到流程）
+
+若模型产生以下想法，立即停止并回到“调用 `delegate.task.execute` -> 看状态”：
+
+1. “我先看代码再说”
+2. “我先给你一个方案确认”
+3. “我先改一点再走插件”
+4. “先手动调低层 API 更快”
+5. “我先做 memory/搜索/扫描再 start”
+
+## 输出要求
+
+每次对用户回报必须包含业务信息：
+
+1. 当前业务阶段，例如：方案制定、计划制定、计划实施、等待实施进展、需要补充上下文。
+2. 阶段判断依据：从用户上下文中看到了什么，例如已有方案、已有计划、用户确认可实施。
+3. 下一步业务动作：主会话制定方案、主会话制定计划、选择计划实施模型、等待实施结果、补充上下文等。
+4. 用户需要做的唯一选择（若有）。
+
+禁止把 `workflow_status` / `current_stage` / `next_action_required` 放在面向用户输出的开头或作为主提示。只有用户要求调试、排障或查看内部状态时，才可以在业务说明之后补充这些字段。
