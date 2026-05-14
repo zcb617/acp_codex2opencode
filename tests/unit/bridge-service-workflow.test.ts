@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLogger } from "../../src/observability/logger.js";
@@ -243,6 +243,12 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_DESIGN");
     expect((start.data as { business_stage: string }).business_stage).toBe("方案制定");
     expect((start.data as { next_business_action: string }).next_business_action).toContain("主会话");
+    const outputDocument = (
+      start.data as { required_output_document: { phase: string; relative_path: string; absolute_path: string; rule: string } }
+    ).required_output_document;
+    expect(outputDocument.phase).toBe("design");
+    expect(outputDocument.relative_path).toContain("docs/superpowers/specs");
+    expect(outputDocument.rule).toContain("不允许只在对话");
     expect((start.data as { next_action_required: string[] }).next_action_required).not.toContain("model_select");
     expect(hacked.listConfiguredModelsFromOpencode as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
@@ -266,9 +272,60 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_PLANNING");
     expect((start.data as { business_stage: string }).business_stage).toBe("计划制定");
     expect((start.data as { next_business_action: string }).next_business_action).toContain("主会话");
+    expect((start.data as { planning_source: { source_type: string; rule: string } }).planning_source.source_type).toBe(
+      "inline_design_from_requirement"
+    );
+    expect((start.data as { planning_source: { rule: string } }).planning_source.rule).toContain("用户直接提供");
+    expect(JSON.stringify((start.data as { required_output_document: unknown }).required_output_document)).toContain(
+      "docs/superpowers/plans"
+    );
     expect((start.data as { next_action_required: string[] }).next_action_required).not.toContain("model_select");
     expect(hacked.listConfiguredModelsFromOpencode as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it("should require planning to read referenced design document paths", async () => {
+    const service = mockBridgeService();
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "请根据 docs/superpowers/specs/2026-05-14-task-business-design-design.md 制定计划。",
+      session_alias: "task-business-planning-from-file",
+      action: "start",
+      start_phase: "planning",
+      start_phase_reason: "当前方案已由主会话生成并保存为文档。",
+      development_type: "feature"
+    });
+
+    expect(start.success).toBe(true);
+    const planningSource = (
+      start.data as { planning_source: { source_type: string; design_document_paths: string[]; rule: string } }
+    ).planning_source;
+    expect(planningSource.source_type).toBe("design_document_path");
+    expect(planningSource.design_document_paths.join("\n")).toContain("2026-05-14-task-business-design-design.md");
+    expect(planningSource.rule).toContain("先读取这些方案文档");
+  });
+
+  it("should extract only the markdown path when planning text contains prose around a Windows path", async () => {
+    const service = mockBridgeService();
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text:
+        "这里是计划入口，不写代码。主会话已经生成方案文件，路径是：E:\\users\\zhangcb\\temp\\provided-design.md，请根据它制定计划。",
+      session_alias: "task-business-planning-from-windows-file",
+      action: "start",
+      start_phase: "planning",
+      start_phase_reason: "当前方案已由主会话生成并保存为文档。",
+      development_type: "feature"
+    });
+
+    expect(start.success).toBe(true);
+    const planningSource = (
+      start.data as { planning_source: { source_type: string; design_document_paths: string[] } }
+    ).planning_source;
+    expect(planningSource.source_type).toBe("design_document_path");
+    expect(planningSource.design_document_paths).toEqual(["E:\\users\\zhangcb\\temp\\provided-design.md"]);
   });
 
   it("should ask for a model with business-oriented wording only when entering implementation", async () => {
@@ -495,6 +552,214 @@ describe("bridge workflow approvals", () => {
     });
     expect(handoff.success).toBe(true);
     expect((handoff.data as { workflow_status: string }).workflow_status).toBe("TRANSFERRED_TO_MAIN");
+  });
+
+  it("should require explicit user decision after three consecutive timeout-default continues", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+
+    const start = await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-timeout-default-limit",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+    expect(start.success).toBe(true);
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-timeout-default-limit");
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 1;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      workflow!.lastProgressAtMs = Date.now() - 10_000;
+      workflow!.nextPollDueAtMs = Date.now() - 1;
+      const decision = await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: START_FROM_DESIGN_REQUIREMENT,
+        session_alias: "task-timeout-default-limit",
+        action: "status"
+      });
+
+      expect(decision.success).toBe(true);
+      expect((decision.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_DECISION");
+      const policy = (decision.data as {
+        user_decision_policy: {
+          allow_timeout_default: boolean;
+          default_action: string;
+          timeout_default_after_seconds: number;
+          consecutive_timeout_defaults: number;
+          consecutive_timeout_default_limit: number;
+        };
+      }).user_decision_policy;
+      expect(policy.allow_timeout_default).toBe(true);
+      expect(policy.default_action).toBe("continue_wait");
+      expect(policy.timeout_default_after_seconds).toBe(60);
+      expect(policy.consecutive_timeout_defaults).toBe(attempt);
+      expect(policy.consecutive_timeout_default_limit).toBe(3);
+
+      const continued = await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: START_FROM_DESIGN_REQUIREMENT,
+        session_alias: "task-timeout-default-limit",
+        action: "continue_wait",
+        decision_source: "timeout_default"
+      } as Parameters<BridgeService["executeTask"]>[0]);
+      expect(continued.success).toBe(true);
+      expect((continued.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+    }
+
+    workflow!.lastProgressAtMs = Date.now() - 10_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+    const fourthDecision = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-timeout-default-limit",
+      action: "status"
+    });
+
+    expect(fourthDecision.success).toBe(true);
+    expect((fourthDecision.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_DECISION");
+    const fourthPolicy = (fourthDecision.data as {
+      user_decision_policy: {
+        allow_timeout_default: boolean;
+        default_action: string | null;
+        consecutive_timeout_defaults: number;
+      };
+    }).user_decision_policy;
+    expect(fourthPolicy.allow_timeout_default).toBe(false);
+    expect(fourthPolicy.default_action).toBeNull();
+    expect(fourthPolicy.consecutive_timeout_defaults).toBe(3);
+
+    const forbiddenDefault = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-timeout-default-limit",
+      action: "continue_wait",
+      decision_source: "timeout_default"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(forbiddenDefault.success).toBe(false);
+    expect(forbiddenDefault.error?.message).toContain("必须由用户明确选择");
+  });
+
+  it("should clear timeout-default count after an explicit user selection", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-user-selection-clears-timeout-defaults",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-user-selection-clears-timeout-defaults");
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 1;
+    workflow!.lastProgressAtMs = Date.now() - 10_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-user-selection-clears-timeout-defaults",
+      action: "status"
+    });
+    await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-user-selection-clears-timeout-defaults",
+      action: "continue_wait",
+      decision_source: "timeout_default"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+
+    workflow!.lastProgressAtMs = Date.now() - 10_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+    const decision = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-user-selection-clears-timeout-defaults",
+      action: "status"
+    });
+    expect((decision.data as { user_decision_policy: { consecutive_timeout_defaults: number } }).user_decision_policy.consecutive_timeout_defaults).toBe(1);
+
+    const userContinued = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-user-selection-clears-timeout-defaults",
+      action: "continue_wait",
+      decision_source: "user_selected"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(userContinued.success).toBe(true);
+
+    workflow!.lastProgressAtMs = Date.now() - 10_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+    const nextDecision = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-user-selection-clears-timeout-defaults",
+      action: "status"
+    });
+    const nextPolicy = (nextDecision.data as {
+      user_decision_policy: { allow_timeout_default: boolean; consecutive_timeout_defaults: number };
+    }).user_decision_policy;
+    expect(nextPolicy.allow_timeout_default).toBe(true);
+    expect(nextPolicy.consecutive_timeout_defaults).toBe(0);
+  });
+
+  it("should clear timeout-default count when ACP emits progress", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-progress-clears-timeout-defaults",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-progress-clears-timeout-defaults");
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 1;
+    workflow!.consecutiveTimeoutDefaultContinueCount = 2;
+    workflow!.lastProgressAtMs = Date.now() - 10_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: true,
+      text: "ACP 已经返回新的进展。",
+      eventCount: 1
+    }));
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-progress-clears-timeout-defaults",
+      action: "status"
+    });
+
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+    expect(
+      (status.data as { user_decision_policy: { consecutive_timeout_defaults: number } }).user_decision_policy
+        .consecutive_timeout_defaults
+    ).toBe(0);
   });
 
   it("should restore a waiting workflow after the plugin process restarts", async () => {
@@ -859,16 +1124,24 @@ describe("bridge workflow approvals", () => {
   it("should build feature design and planning prompts with development guides", () => {
     const service = mockBridgeService();
     const hacked = service as unknown as {
-      buildDesignPrompt: (requirementText: string, acceptanceCriteria?: string, developmentType?: "feature") => string;
-      buildPlanningPrompt: (requirementText: string, acceptanceCriteria?: string, developmentType?: "feature") => string;
+      buildDesignPrompt: (workflow: Record<string, unknown>) => string;
+      buildPlanningPrompt: (workflow: Record<string, unknown>) => string;
     };
 
-    const designPrompt = hacked.buildDesignPrompt("实现一个功能", undefined, "feature");
-    const planningPrompt = hacked.buildPlanningPrompt("实现一个功能", undefined, "feature");
+    const featureWorkflow = {
+      requirementText: "实现一个功能",
+      workspacePath: "D:/repo",
+      sessionAlias: "task-feature-doc",
+      developmentType: "feature"
+    };
+    const designPrompt = hacked.buildDesignPrompt(featureWorkflow);
+    const planningPrompt = hacked.buildPlanningPrompt(featureWorkflow);
 
     expect(designPrompt).toContain("插件 skill 自带指南文档");
     expect(designPrompt).toContain("team-delegate");
     expect(designPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
+    expect(designPrompt).toContain("docs/superpowers/specs");
+    expect(designPrompt).toContain("必须把完整设计文档正文写入上述文件");
     expect(designPrompt).toContain("指南全文开始");
     expect(designPrompt).toContain("你必须按照上方指南全文的要求编写");
     expect(designPrompt).toContain("本指南要求输出的不是“想法文档”");
@@ -878,6 +1151,10 @@ describe("bridge workflow approvals", () => {
     expect(planningPrompt).toContain("插件 skill 自带指南文档");
     expect(planningPrompt).toContain("team-delegate");
     expect(planningPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
+    expect(planningPrompt).toContain("docs/superpowers/plans");
+    expect(planningPrompt).toContain("必须把完整计划文档正文写入上述文件");
+    expect(planningPrompt).toContain("计划必须根据已经确认的方案展开");
+    expect(planningPrompt).toContain("方案来源类型：用户在 requirement_text 中提供的方案正文");
     expect(planningPrompt).toContain("指南全文开始");
     expect(planningPrompt).toContain("你必须按照上方指南全文的要求编写");
     expect(planningPrompt).toContain("完整开发计划 = 开发实施计划");
@@ -889,16 +1166,24 @@ describe("bridge workflow approvals", () => {
   it("should build bugfix design and planning prompts with bugfix guides", () => {
     const service = mockBridgeService();
     const hacked = service as unknown as {
-      buildDesignPrompt: (requirementText: string, acceptanceCriteria?: string, developmentType?: "bugfix") => string;
-      buildPlanningPrompt: (requirementText: string, acceptanceCriteria?: string, developmentType?: "bugfix") => string;
+      buildDesignPrompt: (workflow: Record<string, unknown>) => string;
+      buildPlanningPrompt: (workflow: Record<string, unknown>) => string;
     };
 
-    const designPrompt = hacked.buildDesignPrompt("修复恢复后找不到委派流程的问题", undefined, "bugfix");
-    const planningPrompt = hacked.buildPlanningPrompt("修复恢复后找不到委派流程的问题", undefined, "bugfix");
+    const bugfixWorkflow = {
+      requirementText: "修复恢复后找不到委派流程的问题",
+      workspacePath: "D:/repo",
+      sessionAlias: "task-bugfix-doc",
+      developmentType: "bugfix"
+    };
+    const designPrompt = hacked.buildDesignPrompt(bugfixWorkflow);
+    const planningPrompt = hacked.buildPlanningPrompt(bugfixWorkflow);
 
     expect(designPrompt).toContain("插件 skill 自带指南文档");
     expect(designPrompt).toContain("team-delegate");
     expect(designPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
+    expect(designPrompt).toContain("docs/superpowers/specs");
+    expect(designPrompt).toContain("必须把完整设计文档正文写入上述文件");
     expect(designPrompt).toContain("指南全文开始");
     expect(designPrompt).toContain("你必须按照上方指南全文的要求编写");
     expect(designPrompt).toContain("Bug 修改设计文档 = 失败事实记录");
@@ -909,6 +1194,10 @@ describe("bridge workflow approvals", () => {
     expect(planningPrompt).toContain("插件 skill 自带指南文档");
     expect(planningPrompt).toContain("team-delegate");
     expect(planningPrompt).toContain("禁止读取用户项目目录下的 docs 或 docs/superpowers");
+    expect(planningPrompt).toContain("docs/superpowers/plans");
+    expect(planningPrompt).toContain("必须把完整计划文档正文写入上述文件");
+    expect(planningPrompt).toContain("计划必须根据已经确认的方案展开");
+    expect(planningPrompt).toContain("方案来源类型：用户在 requirement_text 中提供的方案正文");
     expect(planningPrompt).toContain("指南全文开始");
     expect(planningPrompt).toContain("你必须按照上方指南全文的要求编写");
     expect(planningPrompt).toContain("Bug 修改计划 = 设计承诺落实表");
@@ -916,6 +1205,61 @@ describe("bridge workflow approvals", () => {
     expect(planningPrompt).toContain("## TDD 与红灯测试计划");
     expect(planningPrompt).toContain("## 真实业务交付测试计划");
     expect(planningPrompt).not.toContain("## 最终交付清单");
+  });
+
+  it("should validate document gates against the required output document file", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as {
+      evaluateRequiredSections: (
+        result: { success: boolean; data?: { summary?: string } },
+        requiredSections: string[],
+        outputDocumentPath?: string
+      ) => Promise<{ passed: boolean; missingSections: string[] }>;
+    };
+    const outputDir = await mkdtemp(join(tmpdir(), "acp-doc-gate-"));
+    const outputPath = join(outputDir, "design.md");
+    await writeFile(outputPath, DESIGN_SECTIONS_TEXT, "utf8");
+
+    const evaluation = await hacked.evaluateRequiredSections(
+      {
+        success: true,
+        data: {
+          summary: "已写入 docs/superpowers/specs/example-design.md\nSTATUS: DESIGN_READY"
+        }
+      },
+      DESIGN_SECTIONS_TEXT.split("\n"),
+      outputPath
+    );
+
+    expect(evaluation.passed).toBe(true);
+    expect(evaluation.missingSections).toEqual([]);
+  });
+
+  it("should fail document gates when the required output document is missing", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as {
+      evaluateRequiredSections: (
+        result: { success: boolean; data?: { summary?: string } },
+        requiredSections: string[],
+        outputDocumentPath?: string
+      ) => Promise<{ passed: boolean; missingSections: string[] }>;
+    };
+    const outputDir = await mkdtemp(join(tmpdir(), "acp-doc-gate-"));
+    const missingPath = join(outputDir, "missing-design.md");
+
+    const evaluation = await hacked.evaluateRequiredSections(
+      {
+        success: true,
+        data: {
+          summary: DESIGN_SECTIONS_TEXT
+        }
+      },
+      DESIGN_SECTIONS_TEXT.split("\n"),
+      missingPath
+    );
+
+    expect(evaluation.passed).toBe(false);
+    expect(evaluation.missingSections).toContain("输出文档文件");
   });
 
   it("should persist and restore the selected development type", async () => {
@@ -1010,7 +1354,7 @@ describe("bridge workflow approvals", () => {
     expect((passed.data as { delivery_test_passed: boolean }).delivery_test_passed).toBe(true);
   });
 
-  it("should create remediation review after delivery test fails", async () => {
+  it("should require main session remediation plan after delivery test fails", async () => {
     const service = mockBridgeService({ workflowSyncWaitMs: 500 });
     await startAndConfirmModel(service, {
       workspace_path: "D:/repo",
@@ -1029,6 +1373,10 @@ describe("bridge workflow approvals", () => {
 
     expect(failed.success).toBe(true);
     expect((failed.data as { workflow_status: string }).workflow_status).toBe("DELIVERY_TEST_FAILED");
+    expect((failed.data as { next_business_action: string }).next_business_action).toContain(
+      "主会话生成整改方案和整改计划"
+    );
+    expect((failed.data as { pending_remediation_plan?: string }).pending_remediation_plan).toBeUndefined();
     expect((failed.data as { next_action_required: string[] }).next_action_required).toContain(
       "remediation_approve"
     );
@@ -1056,11 +1404,192 @@ describe("bridge workflow approvals", () => {
       requirement_text: "需求",
       session_alias: "task-remediation-return",
       action: "remediation_approve",
-      feedback_text: "确认整改"
+      feedback_text: "整改方案：修复交付测试失败点。\n整改计划：完成修改后重新执行同一条真实交付测试。"
     });
 
     expect(remediation.success).toBe(true);
     expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+  });
+
+  it("should restore the same task ACP session before remediation after a bridge restart", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "acp-remediation-session-restore-"));
+    const service = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await service.init();
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-remediation-session-restore",
+      start_phase: "implementation"
+    });
+
+    await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-session-restore",
+      action: "delivery_test_fail",
+      feedback_text: "首次交付测试失败"
+    });
+    await service.shutdown();
+
+    const restoredService = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await restoredService.init();
+    const restoredInit = (restoredService as unknown as { initSession: ReturnType<typeof vi.fn> }).initSession;
+    restoredInit.mockClear();
+    const remediation = await restoredService.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-session-restore",
+      action: "remediation_approve",
+      feedback_text: "整改方案：修复交付测试失败点。\n整改计划：完成修改后重新执行同一条真实交付测试。"
+    });
+    await restoredService.shutdown();
+
+    expect(remediation.success).toBe(true);
+    expect(restoredInit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspace_path: "D:/repo",
+        session_alias: "task-remediation-session-restore",
+        session_strategy: "auto"
+      })
+    );
+    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+  });
+
+  it("should ask the user to decide when the same task ACP session cannot be restored", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "acp-remediation-session-fail-"));
+    const service = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await service.init();
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-remediation-session-fail",
+      start_phase: "implementation"
+    });
+
+    await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-session-fail",
+      action: "delivery_test_fail",
+      feedback_text: "首次交付测试失败"
+    });
+    await service.shutdown();
+
+    const restoredService = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await restoredService.init();
+    (restoredService as unknown as { initSession: ReturnType<typeof vi.fn> }).initSession = vi.fn(async () => ({
+      request_id: "req_init_failed",
+      success: false,
+      error: {
+        code: ErrorCodes.SESSION_NOT_READY,
+        message: "会话恢复失败",
+        retryable: true
+      }
+    }));
+
+    const remediation = await restoredService.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-session-fail",
+      action: "remediation_approve",
+      feedback_text: "整改方案：修复交付测试失败点。\n整改计划：完成修改后重新执行同一条真实交付测试。"
+    });
+    await restoredService.shutdown();
+
+    expect(remediation.success).toBe(true);
+    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_ACP_SESSION_DECISION");
+    expect((remediation.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "handoff_to_main",
+      "restart_acp_session"
+    ]);
+    expect((remediation.data as { pending_remediation_plan: string }).pending_remediation_plan).toContain(
+      "整改方案"
+    );
+  });
+
+  it("should let the same task be addressed by task_id without repeating session_alias", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 500 });
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-id-addressable-alias",
+      start_phase: "implementation"
+    });
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      task_id: "task-id-addressable-alias",
+      action: "status"
+    } as Parameters<BridgeService["executeTask"]>[0] & { task_id: string });
+
+    expect(status.success).toBe(true);
+    expect((status.data as { task_id: string }).task_id).toBe("task-id-addressable-alias");
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+  });
+
+  it("should silently clear other expired task workflows when a new task starts", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "acp-expired-task-cleanup-"));
+    const service = mockBridgeService({ workflowSyncWaitMs: 500, stateDir });
+    await service.init();
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "old-expired-task",
+      start_phase: "implementation"
+    });
+
+    const store = (service as unknown as {
+      store: {
+        findWorkflowByKey: (key: string) => Promise<{
+          workflowKey: string;
+          workspacePath: string;
+          sessionAlias: string;
+          bridgeSessionId: string;
+          stage: string;
+          snapshot: Record<string, unknown>;
+          createdAt: string;
+          updatedAt: string;
+        } | undefined>;
+        saveWorkflow: (record: {
+          workflowKey: string;
+          workspacePath: string;
+          sessionAlias: string;
+          bridgeSessionId: string;
+          stage: string;
+          snapshot: Record<string, unknown>;
+          createdAt: string;
+          updatedAt: string;
+        }) => Promise<void>;
+      };
+    }).store;
+    const oldKey = "D:/repo::old-expired-task";
+    const oldWorkflow = await store.findWorkflowByKey(oldKey);
+    expect(oldWorkflow).toBeDefined();
+    await store.saveWorkflow({
+      ...oldWorkflow!,
+      snapshot: {
+        ...oldWorkflow!.snapshot,
+        taskId: "old-expired-task"
+      },
+      createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+      updatedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString()
+    });
+
+    const newer = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "new-current-task",
+      action: "start",
+      start_phase: "implementation",
+      development_type: "feature"
+    });
+
+    const oldAfterCleanup = await store.findWorkflowByKey(oldKey);
+    await service.shutdown();
+
+    expect(newer.success).toBe(true);
+    expect(oldAfterCleanup).toBeUndefined();
   });
 
   it("should ask user to decide only after three remediation rounds fail", async () => {
@@ -1087,7 +1616,7 @@ describe("bridge workflow approvals", () => {
         requirement_text: "需求",
         session_alias: "task-remediation-limit",
         action: "remediation_approve",
-        feedback_text: `确认第 ${round} 次整改`
+        feedback_text: `第 ${round} 次整改方案：修复本轮失败点。\n第 ${round} 次整改计划：修改后复测同一条真实交付链路。`
       });
       expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
 
@@ -1137,7 +1666,7 @@ describe("bridge workflow approvals", () => {
         requirement_text: "需求",
         session_alias: "task-remediation-cancel",
         action: "remediation_approve",
-        feedback_text: `确认第 ${round} 次整改`
+        feedback_text: `第 ${round} 次整改方案：修复本轮失败点。\n第 ${round} 次整改计划：修改后复测同一条真实交付链路。`
       });
       await service.executeTask({
         workspace_path: "D:/repo",
@@ -1185,7 +1714,7 @@ describe("bridge workflow approvals", () => {
         requirement_text: "需求",
         session_alias: "task-remediation-restore",
         action: "remediation_approve",
-        feedback_text: `确认第 ${round} 次整改`
+        feedback_text: `第 ${round} 次整改方案：修复恢复场景失败点。\n第 ${round} 次整改计划：修改后复测同一条真实交付链路。`
       });
       const failedAgain = await service.executeTask({
         workspace_path: "D:/repo",

@@ -287,6 +287,14 @@ export class SqliteStore {
     return row ? this.mapWorkflowRow(row) : undefined;
   }
 
+  public async listWorkflows(): Promise<DelegateWorkflowRecord[]> {
+    const rows = await this.mustDb().all<WorkflowRow[]>(
+      `SELECT * FROM delegate_workflows
+       ORDER BY updated_at ASC`
+    );
+    return rows.map((row) => this.mapWorkflowRow(row));
+  }
+
   public async deleteWorkflow(workflowKey: string): Promise<void> {
     await this.mustDb().run(`DELETE FROM delegate_workflows WHERE workflow_key = ?`, [workflowKey]);
   }

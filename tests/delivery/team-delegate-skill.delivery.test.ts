@@ -33,4 +33,55 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("新增功能方案读取 `docs/可交付开发设计文档编写指南-v0.1.md`");
     expect(skill).toContain("BUG 修改计划读取 `docs/可交付BUG修改计划编写指南-v0.1.md`");
   });
+
+  it("must require design and planning outputs to be markdown files", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("方案/计划必须落成文件");
+    expect(skill).toContain("required_output_document.relative_path");
+    expect(skill).toContain("docs/superpowers/specs/<YYYY-MM-DD>-<session_alias>-design.md");
+    expect(skill).toContain("docs/superpowers/plans/<YYYY-MM-DD>-<session_alias>-plan.md");
+    expect(skill).toContain("不得只在聊天回复中输出方案/计划正文");
+  });
+
+  it("must require planning to use the matched design source", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("计划必须对齐方案来源");
+    expect(skill).toContain("把该方案文件路径写入 `requirement_text`");
+    expect(skill).toContain("source_type=design_document_path");
+    expect(skill).toContain("source_type=inline_design_from_requirement");
+    expect(skill).toContain("不得另造方案");
+  });
+
+  it("must require timeout-default decisions to preserve user choice and reset counts correctly", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("allow_timeout_default");
+    expect(skill).toContain("decision_source=timeout_default");
+    expect(skill).toContain("decision_source=user_selected");
+    expect(skill).toContain("用户明确选择");
+    expect(skill).toContain("ACP 返回任意新进展");
+    expect(skill).toContain("清空该计数");
+    expect(skill).toContain("不是同一个机制");
+  });
+
+  it("must require main session to write remediation plan before ACP fixes delivery failures", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("交付测试失败必须由主会话制定整改方案和整改计划");
+    expect(skill).toContain("ACP 不负责制定该方案");
+    expect(skill).toContain("必须把完整整改方案和整改计划放入 `feedback_text`");
+    expect(skill).toContain("ACP 只执行整改实施");
+  });
+
+  it("must preserve task_id and expose the ACP session recovery decision", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("task_id");
+    expect(skill).toContain("同一个 `task_id`");
+    expect(skill).toContain("NEEDS_ACP_SESSION_DECISION");
+    expect(skill).toContain("restart_acp_session");
+    expect(skill).toContain("不能静默启动新的 ACP 会话");
+  });
 });

@@ -69,6 +69,7 @@ export interface CloseInput {
 export interface ExecuteTaskInput {
   workspace_path: string;
   requirement_text: string;
+  task_id?: string;
   session_alias?: string;
   design_planning_executor?: DesignPlanningExecutor;
   development_type?: DevelopmentType | "need_user_input";
@@ -81,6 +82,7 @@ export interface ExecuteTaskInput {
   start_phase_evidence?: string[];
   missing_context?: string[];
   action?: ExecuteTaskAction;
+  decision_source?: ContinueWaitDecisionSource;
   feedback_text?: string;
   preferred_model?: string;
   acceptance_criteria?: string;
@@ -103,7 +105,10 @@ export type ExecuteTaskAction =
   | "delivery_test_pass"
   | "delivery_test_fail"
   | "remediation_approve"
+  | "restart_acp_session"
   | "cancel_follow_up";
+
+type ContinueWaitDecisionSource = "user_selected" | "timeout_default";
 
 type WorkflowStage =
   | "RUNNING_DESIGN"
@@ -114,6 +119,7 @@ type WorkflowStage =
   | "NEEDS_DELIVERY_TEST"
   | "DELIVERY_TEST_FAILED"
   | "RUNNING_REMEDIATION"
+  | "NEEDS_ACP_SESSION_DECISION"
   | "NEEDS_REMEDIATION_DECISION"
   | "NEEDS_USER_DECISION"
   | "TRANSFERRED_TO_MAIN"
@@ -185,6 +191,7 @@ interface WorkflowGateState {
 
 interface TaskWorkflowState {
   workflowId: string;
+  taskId: string;
   sessionAlias: string;
   workspacePath: string;
   bridgeSessionId: string;
@@ -222,6 +229,7 @@ interface TaskWorkflowState {
   silenceDecisionMs: number;
   currentPollCount: number;
   currentPollCycle: number;
+  consecutiveTimeoutDefaultContinueCount: number;
   lastCountedPollAtMs?: number;
   nextPollDueAtMs?: number;
   lastProgressAtMs?: number;
@@ -247,6 +255,51 @@ export interface BridgeRuntimeOptions {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function currentDateStamp(): string {
+  return now().slice(0, 10);
+}
+
+function toDocumentSlug(value: string, fallback: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\\/:*?"<>|\s]+/gu, "-")
+    .replace(/[^-\p{L}\p{N}_]+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^-|-$/gu, "");
+  return slug || fallback;
+}
+
+function buildPhaseDocumentOutput(
+  phase: "design" | "planning",
+  sessionAlias: string,
+  workspacePath?: string
+): { absolutePath?: string; relativePath: string } {
+  const directory = phase === "design" ? "docs/superpowers/specs" : "docs/superpowers/plans";
+  const suffix = phase === "design" ? "design" : "plan";
+  const relativePath = `${directory}/${currentDateStamp()}-${toDocumentSlug(sessionAlias, "team-delegate")}-${suffix}.md`;
+  return {
+    relativePath,
+    absolutePath: workspacePath ? join(workspacePath, ...relativePath.split("/")) : undefined
+  };
+}
+
+function buildDocumentOutputPromptLines(
+  phase: "design" | "planning",
+  sessionAlias: string,
+  workspacePath: string
+): string[] {
+  const output = buildPhaseDocumentOutput(phase, sessionAlias, workspacePath);
+  const label = phase === "design" ? "设计文档" : "计划文档";
+  return [
+    "文档输出要求：",
+    `- 必须创建或更新 ${label} Markdown 文件：${output.relativePath}`,
+    `- 绝对路径：${output.absolutePath}`,
+    `- 必须把完整${label}正文写入上述文件，不允许只在对话里输出一段方案或计划文字。`,
+    "- 最终回复只输出文件路径、简短摘要和状态行；不要把完整文档正文粘贴到对话里。"
+  ];
 }
 
 function makeResult<T>(requestId: string, data: T): BridgeResult<T> {
@@ -450,6 +503,9 @@ const DEFAULT_WORKFLOW_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_WORKFLOW_POLL_INTERVAL_MIN_MS = 60_000;
 const DEFAULT_WORKFLOW_POLL_INTERVAL_MAX_MS = 120_000;
 const DEFAULT_WORKFLOW_SILENCE_DECISION_MS = 300_000;
+const DEFAULT_USER_DECISION_TIMEOUT_DEFAULT_AFTER_MS = 60_000;
+const MAX_CONSECUTIVE_TIMEOUT_DEFAULT_CONTINUES = 3;
+const TASK_ACP_KEEPALIVE_CLEANUP_MS = 4 * 60 * 60 * 1000;
 const WORKFLOW_FOLLOW_UP_GATE_CHECK_MS = 250;
 const MAX_REMEDIATION_ROUNDS = 3;
 const MODEL_PREFERENCE_FILENAME = "preferred-models.json";
@@ -735,20 +791,24 @@ export class BridgeService {
     const requestId = newRequestId();
     const action: ExecuteTaskAction = input.action ?? "start";
     const timeoutMs = input.timeout_ms;
-    const sessionAlias = this.resolveSessionAlias(input, action);
-    const workflowKey = this.toWorkflowKey(input.workspace_path, sessionAlias);
+    let sessionAlias = input.session_alias?.trim() ?? input.task_id?.trim() ?? "";
 
     try {
+      const identity = await this.resolveTaskIdentity(input, action);
+      sessionAlias = identity.sessionAlias;
+      const taskId = identity.taskId;
+      const workflowKey = this.toWorkflowKey(input.workspace_path, sessionAlias);
+
       if (action === "start") {
-        return await this.handleStartWithModelGate(requestId, input, sessionAlias, workflowKey);
+        return await this.handleStartWithModelGate(requestId, input, sessionAlias, taskId, workflowKey);
       }
 
       if (action === "model_confirm") {
-        return await this.handleModelConfirmAction(requestId, input, sessionAlias, workflowKey, timeoutMs);
+        return await this.handleModelConfirmAction(requestId, input, sessionAlias, taskId, workflowKey, timeoutMs);
       }
 
       if (action === "model_select") {
-        return await this.handleModelSelectAction(requestId, input, sessionAlias, workflowKey, timeoutMs);
+        return await this.handleModelSelectAction(requestId, input, sessionAlias, taskId, workflowKey, timeoutMs);
       }
 
       const workflow = await this.loadWorkflowState(input.workspace_path, sessionAlias);
@@ -764,7 +824,8 @@ export class BridgeService {
       }
 
       if (action === "continue_wait") {
-        this.assertContinueWaitAllowed(workflow);
+        const decisionSource = this.resolveContinueWaitDecisionSource(input);
+        this.assertContinueWaitAllowed(workflow, decisionSource);
         if (workflow.restoredWithoutRunner) {
           await this.persistWorkflowState(workflow);
           await this.audit(requestId, "task.execute.continue-wait", "codex", "OK", {
@@ -778,13 +839,20 @@ export class BridgeService {
         workflow.lastProgressAtMs = continuedAtMs;
         workflow.lastProgressAt = new Date(continuedAtMs).toISOString();
         workflow.lastProgressUpdate = undefined;
+        if (decisionSource === "timeout_default") {
+          workflow.consecutiveTimeoutDefaultContinueCount += 1;
+        } else {
+          workflow.consecutiveTimeoutDefaultContinueCount = 0;
+        }
         this.resetWorkflowPollCycle(workflow);
         workflow.stage = this.resolveRunningStageByPhase(workflow.activePhase);
         await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.continue-wait", "codex", "OK", {
           sessionAlias,
           bridgeSessionId: workflow.bridgeSessionId,
-          pollCycle: workflow.currentPollCycle
+          pollCycle: workflow.currentPollCycle,
+          decisionSource,
+          consecutiveTimeoutDefaultContinueCount: workflow.consecutiveTimeoutDefaultContinueCount
         });
         return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
       }
@@ -823,13 +891,26 @@ export class BridgeService {
       }
 
       if (action === "remediation_approve") {
-        await this.handleRemediationApprove(workflow, input.feedback_text);
+        const remediationPlanText = this.requireFeedback(input.feedback_text, action);
+        await this.handleRemediationApprove(workflow, remediationPlanText);
         await this.waitForWorkflowShortSyncWindow(workflow);
         await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.remediation-approve", "codex", "OK", {
           sessionAlias,
           bridgeSessionId: workflow.bridgeSessionId,
           remediationRound: workflow.remediationRound
+        });
+        return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+      }
+
+      if (action === "restart_acp_session") {
+        await this.handleRestartAcpSession(workflow);
+        await this.waitForWorkflowShortSyncWindow(workflow);
+        await this.persistWorkflowState(workflow);
+        await this.audit(requestId, "task.execute.restart-acp-session", "codex", "OK", {
+          sessionAlias,
+          taskId,
+          bridgeSessionId: workflow.bridgeSessionId
         });
         return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
       }
@@ -847,6 +928,10 @@ export class BridgeService {
       if (action === "design_feedback") {
         this.assertWorkflowStage(workflow, ["WAITING_DESIGN_APPROVAL"], action);
         const feedback = this.requireFeedback(input.feedback_text, action);
+        if (!(await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, false))) {
+          await this.persistWorkflowState(workflow);
+          return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+        }
         this.launchWorkflowPhase(workflow, "RUNNING_DESIGN", "design", async () => {
           await this.applyDesignFeedback(workflow, feedback);
         });
@@ -861,6 +946,10 @@ export class BridgeService {
 
       if (action === "design_approve") {
         this.assertWorkflowStage(workflow, ["WAITING_DESIGN_APPROVAL"], action);
+        if (!(await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, false))) {
+          await this.persistWorkflowState(workflow);
+          return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+        }
         this.launchWorkflowPhase(workflow, "RUNNING_PLANNING", "planning", async () => {
           await this.runPlanningPhase(workflow);
         });
@@ -876,6 +965,10 @@ export class BridgeService {
       if (action === "planning_feedback") {
         this.assertWorkflowStage(workflow, ["WAITING_PLAN_APPROVAL"], action);
         const feedback = this.requireFeedback(input.feedback_text, action);
+        if (!(await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, false))) {
+          await this.persistWorkflowState(workflow);
+          return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+        }
         this.launchWorkflowPhase(workflow, "RUNNING_PLANNING", "planning", async () => {
           await this.applyPlanningFeedback(workflow, feedback);
         });
@@ -889,6 +982,10 @@ export class BridgeService {
       }
 
       this.assertWorkflowStage(workflow, ["WAITING_PLAN_APPROVAL"], action);
+      if (!(await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, false))) {
+        await this.persistWorkflowState(workflow);
+        return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+      }
       this.launchWorkflowPhase(workflow, "RUNNING_IMPLEMENTATION", "implementation", async () => {
         workflow.lastImplementationResult = await this.runImplementationPhase(workflow);
         this.enterDeliveryTestGate(workflow);
@@ -912,13 +1009,41 @@ export class BridgeService {
     }
   }
 
-  private resolveSessionAlias(input: ExecuteTaskInput, action: ExecuteTaskAction): string {
+  private async resolveTaskIdentity(
+    input: ExecuteTaskInput,
+    action: ExecuteTaskAction
+  ): Promise<{ sessionAlias: string; taskId: string }> {
     const alias = input.session_alias?.trim();
     if (alias) {
-      return alias;
+      return {
+        sessionAlias: alias,
+        taskId: input.task_id?.trim() || alias
+      };
+    }
+
+    const taskId = input.task_id?.trim();
+    if (taskId) {
+      if (action === "start") {
+        return {
+          sessionAlias: taskId,
+          taskId
+        };
+      }
+      const workflow = await this.findWorkflowByTaskId(input.workspace_path, taskId);
+      if (!workflow) {
+        throw new BridgeError(ErrorCodes.WORKFLOW_NOT_FOUND, `未找到 task_id 对应的委派流程: ${taskId}`, false);
+      }
+      return {
+        sessionAlias: workflow.sessionAlias,
+        taskId: workflow.taskId
+      };
     }
     if (action === "start") {
-      return `task-${Date.now()}`;
+      const generated = `task-${Date.now()}`;
+      return {
+        sessionAlias: generated,
+        taskId: generated
+      };
     }
     throw new BridgeError(ErrorCodes.INVALID_REQUEST, `${action} 需要传入 session_alias`, false);
   }
@@ -934,8 +1059,10 @@ export class BridgeService {
     requestId: string,
     input: ExecuteTaskInput,
     sessionAlias: string,
+    taskId: string,
     workflowKey: string
   ): Promise<BridgeResult<unknown>> {
+    await this.cleanupExpiredOtherTaskWorkflows(input.workspace_path, taskId);
     const existingWorkflow = await this.restoreExistingWorkflowForStart(workflowKey);
     if (existingWorkflow) {
       await this.audit(requestId, "task.execute.start.restore-existing", "codex", "OK", {
@@ -954,7 +1081,10 @@ export class BridgeService {
         sessionAlias,
         missingContext: [...startDecision.missingContext, ...developmentDecision.missingContext]
       });
-      return makeResult(requestId, this.buildNeedsUserInputResponse(sessionAlias, startDecision, developmentDecision));
+      return makeResult(
+        requestId,
+        this.buildNeedsUserInputResponse(sessionAlias, taskId, startDecision, developmentDecision)
+      );
     }
 
     const designPlanningExecutor = this.resolveDesignPlanningExecutor(input);
@@ -968,7 +1098,15 @@ export class BridgeService {
       });
       return makeResult(
         requestId,
-        this.buildNeedsMainPhaseResponse(sessionAlias, startDecision.phase, startDecision.evidence, developmentDecision)
+        this.buildNeedsMainPhaseResponse(
+          input.workspace_path,
+          sessionAlias,
+          taskId,
+          startDecision.phase,
+          input.requirement_text,
+          startDecision.evidence,
+          developmentDecision
+        )
       );
     }
 
@@ -983,6 +1121,7 @@ export class BridgeService {
         requestId,
         this.buildNeedsModelConfirmResponse(
           sessionAlias,
+          taskId,
           modelGate.savedModel,
           modelGate.availableModels,
           startDecision,
@@ -1002,6 +1141,7 @@ export class BridgeService {
       requestId,
       this.buildNeedsModelSelectionResponse(
         sessionAlias,
+        taskId,
         modelGate.availableModels,
         reason,
         startDecision,
@@ -1015,6 +1155,7 @@ export class BridgeService {
     requestId: string,
     input: ExecuteTaskInput,
     sessionAlias: string,
+    taskId: string,
     workflowKey: string,
     timeoutMs: number | undefined
   ): Promise<BridgeResult<unknown>> {
@@ -1032,6 +1173,7 @@ export class BridgeService {
         requestId,
         this.buildNeedsModelSelectionResponse(
           sessionAlias,
+          taskId,
           modelGate.availableModels,
           "你选择了重新选择模型，请从可用模型中选择一个。",
           startDecision,
@@ -1048,6 +1190,7 @@ export class BridgeService {
         requestId,
         this.buildNeedsModelSelectionResponse(
           sessionAlias,
+          taskId,
           modelGate.availableModels,
           reason,
           startDecision,
@@ -1061,6 +1204,7 @@ export class BridgeService {
       requestId,
       effectiveInput,
       sessionAlias,
+      taskId,
       workflowKey,
       timeoutMs,
       modelGate.savedModel
@@ -1071,6 +1215,7 @@ export class BridgeService {
     requestId: string,
     input: ExecuteTaskInput,
     sessionAlias: string,
+    taskId: string,
     workflowKey: string,
     timeoutMs: number | undefined
   ): Promise<BridgeResult<unknown>> {
@@ -1088,6 +1233,7 @@ export class BridgeService {
         requestId,
         this.buildNeedsModelSelectionResponse(
           sessionAlias,
+          taskId,
           modelGate.availableModels,
           `模型 ${selectedModel} 不在当前可用模型列表中，请重新选择。`,
           startDecision,
@@ -1101,6 +1247,7 @@ export class BridgeService {
       requestId,
       effectiveInput,
       sessionAlias,
+      taskId,
       workflowKey,
       timeoutMs,
       selectedModel
@@ -1111,6 +1258,7 @@ export class BridgeService {
     requestId: string,
     input: ExecuteTaskInput,
     sessionAlias: string,
+    taskId: string,
     workflowKey: string,
     timeoutMs: number | undefined,
     selectedModel: string
@@ -1125,7 +1273,7 @@ export class BridgeService {
         selectedModel
       });
       return makeResult(requestId, {
-        ...this.buildNeedsUserInputResponse(sessionAlias, startDecision, developmentDecision),
+        ...this.buildNeedsUserInputResponse(sessionAlias, taskId, startDecision, developmentDecision),
         selected_model: selectedModel
       });
     }
@@ -1141,7 +1289,15 @@ export class BridgeService {
         selectedModel
       });
       return makeResult(requestId, {
-        ...this.buildNeedsMainPhaseResponse(sessionAlias, startDecision.phase, startDecision.evidence, developmentDecision),
+        ...this.buildNeedsMainPhaseResponse(
+          input.workspace_path,
+          sessionAlias,
+          taskId,
+          startDecision.phase,
+          input.requirement_text,
+          startDecision.evidence,
+          developmentDecision
+        ),
         selected_model: selectedModel
       });
     }
@@ -1153,6 +1309,7 @@ export class BridgeService {
     const workflow = await this.startWorkflow(
       workflowInput,
       sessionAlias,
+      taskId,
       timeoutMs,
       startDecision.phase,
       startDecision.evidence,
@@ -1213,7 +1370,8 @@ export class BridgeService {
       ...pending,
       ...input,
       action: "start",
-      session_alias: input.session_alias ?? pending.session_alias
+      session_alias: input.session_alias ?? pending.session_alias,
+      task_id: input.task_id ?? pending.task_id
     };
   }
 
@@ -1242,12 +1400,14 @@ export class BridgeService {
 
   private buildNeedsModelConfirmResponse(
     sessionAlias: string,
+    taskId: string,
     savedModel: string,
     availableModels: string[],
     startDecision: StartPhaseDecision,
     developmentDecision: DevelopmentTypeDecision
   ): Record<string, unknown> {
     return {
+      task_id: taskId,
       session_alias: sessionAlias,
       workflow_status: "NEEDS_MODEL_CONFIRM",
       current_stage: "NEEDS_MODEL_CONFIRM",
@@ -1278,6 +1438,7 @@ export class BridgeService {
 
   private buildNeedsModelSelectionResponse(
     sessionAlias: string,
+    taskId: string,
     availableModels: string[],
     reason: string,
     startDecision: StartPhaseDecision,
@@ -1285,6 +1446,7 @@ export class BridgeService {
     savedModel?: string
   ): Record<string, unknown> {
     return {
+      task_id: taskId,
       session_alias: sessionAlias,
       workflow_status: "NEEDS_MODEL_SELECTION",
       current_stage: "NEEDS_MODEL_SELECTION",
@@ -1462,6 +1624,7 @@ export class BridgeService {
 
   private buildNeedsUserInputResponse(
     sessionAlias: string,
+    taskId: string,
     startDecision: StartPhaseDecision,
     developmentDecision?: DevelopmentTypeDecision
   ): Record<string, unknown> {
@@ -1476,6 +1639,7 @@ export class BridgeService {
           document_profile: null
         };
     return {
+      task_id: taskId,
       session_alias: sessionAlias,
       workflow_status: "NEEDS_USER_INPUT",
       current_stage: "NEEDS_USER_INPUT",
@@ -1493,21 +1657,33 @@ export class BridgeService {
   }
 
   private buildNeedsMainPhaseResponse(
+    workspacePath: string,
     sessionAlias: string,
+    taskId: string,
     phase: "design" | "planning",
+    requirementText: string,
     detectionEvidence: string[],
     developmentDecision: DevelopmentTypeDecision
   ): Record<string, unknown> {
     const developmentPayload = this.toDevelopmentDecisionPayload(developmentDecision);
+    const outputDocument = buildPhaseDocumentOutput(phase, sessionAlias, workspacePath);
+    const planningSource = this.buildPlanningSourcePayload(workspacePath, sessionAlias, requirementText);
     if (phase === "design") {
       return {
+        task_id: taskId,
         session_alias: sessionAlias,
         workflow_status: "NEEDS_MAIN_DESIGN",
         current_stage: "NEEDS_MAIN_DESIGN",
         business_stage: "方案制定",
         business_reason: "当前还没有完整方案，需要先完成方案制定。",
-        next_business_action: "由主会话继续制定方案",
-        user_message: "当前还没有完整方案，需要先进入方案制定阶段。按约定方案制定由主会话执行，不需要选择 ACP 模型。",
+        next_business_action: `由主会话继续制定方案，并写入 ${outputDocument.relativePath}`,
+        user_message: `当前还没有完整方案，需要先进入方案制定阶段。按约定方案制定由主会话执行，不需要选择 ACP 模型；输出必须是 Markdown 文档，路径为 ${outputDocument.relativePath}。`,
+        required_output_document: {
+          phase: "design",
+          relative_path: outputDocument.relativePath,
+          absolute_path: outputDocument.absolutePath,
+          rule: "必须创建或更新该 Markdown 文件，不允许只在对话中输出方案文字"
+        },
         detected_start_phase: "design",
         detection_evidence: detectionEvidence,
         ...developmentPayload,
@@ -1517,7 +1693,7 @@ export class BridgeService {
           {
             option: "1",
             label: "主会话执行（默认）",
-            description: "由主会话先完成设计文档，完成后再次调用 start 进入下一阶段"
+            description: `由主会话先完成设计文档并写入 ${outputDocument.relativePath}，完成后再次调用 start 进入下一阶段`
           },
           {
             option: "2",
@@ -1529,13 +1705,21 @@ export class BridgeService {
     }
 
     return {
+      task_id: taskId,
       session_alias: sessionAlias,
       workflow_status: "NEEDS_MAIN_PLANNING",
       current_stage: "NEEDS_MAIN_PLANNING",
       business_stage: "计划制定",
       business_reason: "当前已有方案，但还需要制定可执行计划。",
-      next_business_action: "由主会话继续制定计划",
-      user_message: "当前已有方案，需要进入计划制定阶段。按约定计划制定由主会话执行，不需要选择 ACP 模型。",
+      next_business_action: `由主会话先读取或确认方案来源，再制定计划，并写入 ${outputDocument.relativePath}`,
+      user_message: `当前已有方案，需要进入计划制定阶段。按约定计划制定由主会话执行，不需要选择 ACP 模型；计划必须对齐方案来源，输出必须是 Markdown 文档，路径为 ${outputDocument.relativePath}。`,
+      planning_source: planningSource,
+      required_output_document: {
+        phase: "planning",
+        relative_path: outputDocument.relativePath,
+        absolute_path: outputDocument.absolutePath,
+        rule: "必须创建或更新该 Markdown 文件，不允许只在对话中输出计划文字"
+      },
       detected_start_phase: "planning",
       detection_evidence: detectionEvidence,
       ...developmentPayload,
@@ -1545,7 +1729,7 @@ export class BridgeService {
         {
           option: "1",
           label: "主会话执行（默认）",
-          description: "由主会话先完成计划文档，完成后再次调用 start 进入实现阶段"
+          description: `由主会话先完成计划文档并写入 ${outputDocument.relativePath}，完成后再次调用 start 进入实现阶段`
         },
         {
           option: "2",
@@ -1553,6 +1737,33 @@ export class BridgeService {
           description: "重新调用 start，并传 design_planning_executor=acp"
         }
       ]
+    };
+  }
+
+  private buildPlanningSourcePayload(
+    workspacePath: string,
+    sessionAlias: string,
+    requirementText: string
+  ): Record<string, unknown> {
+    const designDocumentPaths = this.extractMarkdownPaths(requirementText, workspacePath);
+    const expectedGeneratedDesignDocument = buildPhaseDocumentOutput("design", sessionAlias, workspacePath);
+    if (designDocumentPaths.length > 0) {
+      return {
+        source_type: "design_document_path",
+        design_document_paths: designDocumentPaths,
+        rule:
+          "计划必须先读取这些方案文档，并逐项对齐方案中的设计目标、业务流程、契约、状态机、数据模型、配置项、异常矩阵和验收标准。"
+      };
+    }
+
+    return {
+      source_type: "inline_design_from_requirement",
+      expected_generated_design_document: {
+        relative_path: expectedGeneratedDesignDocument.relativePath,
+        absolute_path: expectedGeneratedDesignDocument.absolutePath
+      },
+      rule:
+        "若方案由主会话刚生成，必须在重新 start 时把方案文件路径写入 requirement_text；若方案由用户直接提供，则计划必须以 requirement_text 中的方案正文为依据。若二者都没有，不得编写计划，必须要求补充方案来源。"
     };
   }
 
@@ -1638,6 +1849,86 @@ export class BridgeService {
     }
   }
 
+  private async findWorkflowByTaskId(
+    workspacePath: string,
+    taskId: string
+  ): Promise<TaskWorkflowState | undefined> {
+    for (const [workflowKey, workflow] of this.workflowByKey.entries()) {
+      if (workflow.workspacePath === workspacePath && workflow.taskId === taskId) {
+        this.workflowByKey.set(workflowKey, workflow);
+        return workflow;
+      }
+    }
+
+    let records: DelegateWorkflowRecord[];
+    try {
+      records = await this.store.listWorkflows();
+    } catch {
+      return undefined;
+    }
+    const record = records.find((item) => {
+      if (item.workspacePath !== workspacePath) {
+        return false;
+      }
+      const recordTaskId = this.readString(item.snapshot.taskId) ?? item.sessionAlias;
+      return recordTaskId === taskId;
+    });
+    if (!record) {
+      return undefined;
+    }
+
+    const restored = this.restoreWorkflowState(record);
+    this.workflowByKey.set(record.workflowKey, restored);
+    return restored;
+  }
+
+  private async cleanupExpiredOtherTaskWorkflows(workspacePath: string, currentTaskId: string): Promise<void> {
+    let records: DelegateWorkflowRecord[];
+    try {
+      records = await this.store.listWorkflows();
+    } catch (error) {
+      this.logger.warn("workflow.expired.lookup_failed", {
+        currentTaskId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+    const expiredBeforeMs = Date.now() - TASK_ACP_KEEPALIVE_CLEANUP_MS;
+    for (const record of records) {
+      if (record.workspacePath !== workspacePath) {
+        continue;
+      }
+      const recordTaskId = this.readString(record.snapshot.taskId) ?? record.sessionAlias;
+      if (recordTaskId === currentTaskId) {
+        continue;
+      }
+      const lastActiveAtMs = Date.parse(record.updatedAt) || Date.parse(record.createdAt);
+      if (!Number.isFinite(lastActiveAtMs) || lastActiveAtMs > expiredBeforeMs) {
+        continue;
+      }
+
+      if (this.sessionApi) {
+        try {
+          await this.close({
+            bridge_session_id: record.bridgeSessionId,
+            force: true,
+            timeout_ms: 10_000
+          });
+        } catch (error) {
+          this.logger.warn("workflow.expired.close_failed", {
+            taskId: recordTaskId,
+            bridgeSessionId: record.bridgeSessionId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      await this.store.deleteWorkflow(record.workflowKey);
+      this.workflowByKey.delete(record.workflowKey);
+      this.pendingStartInputByKey.delete(record.workflowKey);
+    }
+  }
+
   private async persistWorkflowState(workflow: TaskWorkflowState): Promise<void> {
     const workflowKey = this.toWorkflowKey(workflow.workspacePath, workflow.sessionAlias);
     const timestamp = now();
@@ -1669,6 +1960,7 @@ export class BridgeService {
   private toWorkflowSnapshot(workflow: TaskWorkflowState): Record<string, unknown> {
     return {
       workflowId: workflow.workflowId,
+      taskId: workflow.taskId,
       sessionAlias: workflow.sessionAlias,
       workspacePath: workflow.workspacePath,
       bridgeSessionId: workflow.bridgeSessionId,
@@ -1704,6 +1996,7 @@ export class BridgeService {
       silenceDecisionMs: workflow.silenceDecisionMs,
       currentPollCount: workflow.currentPollCount,
       currentPollCycle: workflow.currentPollCycle,
+      consecutiveTimeoutDefaultContinueCount: workflow.consecutiveTimeoutDefaultContinueCount,
       lastCountedPollAtMs: workflow.lastCountedPollAtMs,
       nextPollDueAtMs: workflow.nextPollDueAtMs,
       lastProgressAtMs: workflow.lastProgressAtMs,
@@ -1724,6 +2017,7 @@ export class BridgeService {
 
     return {
       workflowId: this.readString(snapshot.workflowId) ?? `${Date.now()}`,
+      taskId: this.readString(snapshot.taskId) ?? record.sessionAlias,
       sessionAlias: record.sessionAlias,
       workspacePath: record.workspacePath,
       bridgeSessionId: record.bridgeSessionId,
@@ -1760,6 +2054,7 @@ export class BridgeService {
       silenceDecisionMs: this.readNumber(snapshot.silenceDecisionMs) ?? DEFAULT_WORKFLOW_SILENCE_DECISION_MS,
       currentPollCount: this.readNumber(snapshot.currentPollCount) ?? 0,
       currentPollCycle: this.readNumber(snapshot.currentPollCycle) ?? 0,
+      consecutiveTimeoutDefaultContinueCount: this.readNumber(snapshot.consecutiveTimeoutDefaultContinueCount) ?? 0,
       lastCountedPollAtMs: this.readNumber(snapshot.lastCountedPollAtMs),
       nextPollDueAtMs: this.readNumber(snapshot.nextPollDueAtMs),
       lastProgressAtMs: this.readNumber(snapshot.lastProgressAtMs),
@@ -1815,6 +2110,7 @@ export class BridgeService {
       "NEEDS_DELIVERY_TEST",
       "DELIVERY_TEST_FAILED",
       "RUNNING_REMEDIATION",
+      "NEEDS_ACP_SESSION_DECISION",
       "NEEDS_REMEDIATION_DECISION",
       "NEEDS_USER_DECISION",
       "TRANSFERRED_TO_MAIN",
@@ -2346,17 +2642,61 @@ export class BridgeService {
     };
   }
 
+  private loadContextFromReferencedDocsSync(
+    workspacePath: string,
+    text: string
+  ): { content: string; loadedPaths: string[]; failedPaths: string[] } {
+    const filePaths = this.extractMarkdownPaths(text, workspacePath);
+    const loadedPaths: string[] = [];
+    const failedPaths: string[] = [];
+    const chunks: string[] = [];
+    for (const filePath of filePaths.slice(0, 5)) {
+      try {
+        const content = readFileSync(filePath, "utf8");
+        loadedPaths.push(filePath);
+        chunks.push(`### 方案文件: ${filePath}\n${content}`);
+      } catch {
+        failedPaths.push(filePath);
+      }
+    }
+    return {
+      content: chunks.join("\n\n"),
+      loadedPaths,
+      failedPaths
+    };
+  }
+
   private extractMarkdownPaths(text: string, workspacePath: string): string[] {
     const candidates = new Set<string>();
-    const absolutePattern = /[A-Za-z]:[^\s"'`<>|]+\.md/g;
-    const relativePattern = /(?:\.{1,2}[\\/][^\s"'`<>|]+\.md|[^\s"'`<>|]+\.md)/g;
-    const sanitize = (value: string): string => value.replace(/[),.;，。；：]+$/g, "");
+    const absolutePattern =
+      /[A-Za-z]:[\\/](?:[^\s"'`<>|,;:，。；：、）)]+[\\/])*[^\s"'`<>|,;:，。；：、）)]+\.m(?:d|arkdown)/gi;
+    const relativePattern =
+      /(?:\.{1,2}[\\/][^\s"'`<>|,;:，。；：、）)]+\.m(?:d|arkdown)|(?:[A-Za-z0-9_.-]+[\\/])+(?:[^\s"'`<>|,;:，。；：、）)]+\.m(?:d|arkdown)))/gi;
+    const sanitize = (value: string): string => value.replace(/[),.;，。；：、）]+$/g, "");
+    const absoluteSpans: Array<{ start: number; end: number }> = [];
 
-    for (const match of text.match(absolutePattern) ?? []) {
-      candidates.add(resolve(sanitize(match)));
+    for (const match of text.matchAll(absolutePattern)) {
+      if (match.index === undefined) {
+        continue;
+      }
+      const candidate = sanitize(match[0]);
+      candidates.add(resolve(candidate));
+      absoluteSpans.push({
+        start: match.index,
+        end: match.index + match[0].length
+      });
     }
-    for (const match of text.match(relativePattern) ?? []) {
-      const candidate = sanitize(match);
+    for (const match of text.matchAll(relativePattern)) {
+      if (match.index === undefined) {
+        continue;
+      }
+      const insideAbsolute = absoluteSpans.some(
+        (span) => match.index! >= span.start && match.index! < span.end
+      );
+      if (insideAbsolute) {
+        continue;
+      }
+      const candidate = sanitize(match[0]);
       if (/^https?:\/\//i.test(candidate)) {
         continue;
       }
@@ -2435,6 +2775,7 @@ export class BridgeService {
         observedAt
       };
       workflow.currentPollCount = 0;
+      workflow.consecutiveTimeoutDefaultContinueCount = 0;
       workflow.stage = this.resolveRunningStageByPhase(workflow.activePhase);
       this.scheduleNextWorkflowPoll(workflow, nowMs, true);
       return;
@@ -2525,14 +2866,43 @@ export class BridgeService {
     return "RUNNING_IMPLEMENTATION";
   }
 
-  private assertContinueWaitAllowed(workflow: TaskWorkflowState): void {
+  private resolveContinueWaitDecisionSource(input: ExecuteTaskInput): ContinueWaitDecisionSource {
+    return input.decision_source === "timeout_default" ? "timeout_default" : "user_selected";
+  }
+
+  private canUseTimeoutDefaultContinue(workflow: TaskWorkflowState): boolean {
+    return (
+      workflow.stage === "NEEDS_USER_DECISION" &&
+      !this.restoredWorkflowCannotStream(workflow) &&
+      workflow.consecutiveTimeoutDefaultContinueCount < MAX_CONSECUTIVE_TIMEOUT_DEFAULT_CONTINUES
+    );
+  }
+
+  private assertContinueWaitAllowed(
+    workflow: TaskWorkflowState,
+    decisionSource: ContinueWaitDecisionSource
+  ): void {
     if (workflow.stage === "NEEDS_USER_DECISION" && this.restoredWorkflowCannotStream(workflow)) {
+      if (decisionSource === "timeout_default") {
+        throw new BridgeError(
+          ErrorCodes.WORKFLOW_INVALID_TRANSITION,
+          "当前委派执行端无法继续回传进展，不能使用超时默认继续，必须由用户明确选择后续动作",
+          false
+        );
+      }
       return;
     }
     if (!workflow.pendingTask || workflow.stage !== "NEEDS_USER_DECISION") {
       throw new BridgeError(
         ErrorCodes.WORKFLOW_INVALID_TRANSITION,
         "当前无需 continue_wait，只有在 NEEDS_USER_DECISION 且任务仍在运行时才可继续等待",
+        false
+      );
+    }
+    if (decisionSource === "timeout_default" && !this.canUseTimeoutDefaultContinue(workflow)) {
+      throw new BridgeError(
+        ErrorCodes.WORKFLOW_INVALID_TRANSITION,
+        "连续无人响应默认继续次数已达到上限，必须由用户明确选择后才能继续",
         false
       );
     }
@@ -2563,12 +2933,23 @@ export class BridgeService {
       timeout_ms: timeoutMs ?? workflow.timeoutMs
     });
     if (!closeResult.success) {
+      if (
+        closeResult.error?.code === ErrorCodes.ACP_PROCESS_UNAVAILABLE ||
+        closeResult.error?.code === ErrorCodes.SESSION_NOT_READY
+      ) {
+        this.logger.warn("workflow.handoff.close_unavailable", {
+          bridgeSessionId: workflow.bridgeSessionId,
+          code: closeResult.error.code,
+          message: closeResult.error.message
+        });
+      } else {
       const error = closeResult.error ?? {
         code: ErrorCodes.SESSION_CLOSE_FAILED,
         message: "转交主会话时关闭 ACP 会话失败",
         retryable: true
       };
       throw new BridgeError(error.code as ErrorCode, error.message, error.retryable);
+      }
     }
 
     workflow.stage = "TRANSFERRED_TO_MAIN";
@@ -2633,25 +3014,111 @@ export class BridgeService {
       workflow.lastCompletedAt = now();
       return;
     }
-    this.launchWorkflowPhase(workflow, "RUNNING_REMEDIATION", "rework", async () => {
-      await this.runRemediationPlanPhase(workflow, failureText);
-    });
+    workflow.stage = "DELIVERY_TEST_FAILED";
+    workflow.lastCompletedAt = now();
   }
 
   private async handleRemediationApprove(
     workflow: TaskWorkflowState,
-    feedbackText: string | undefined
+    remediationPlanText: string
   ): Promise<void> {
     this.assertWorkflowStage(workflow, ["DELIVERY_TEST_FAILED"], "remediation_approve");
     if (workflow.remediationRound >= MAX_REMEDIATION_ROUNDS) {
       workflow.stage = "NEEDS_REMEDIATION_DECISION";
       return;
     }
+    workflow.pendingRemediationPlan = remediationPlanText;
+    const ready = await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, false);
+    if (!ready) {
+      return;
+    }
     workflow.remediationRound += 1;
     this.launchWorkflowPhase(workflow, "RUNNING_REMEDIATION", "rework", async () => {
-      await this.runRemediationImplementationPhase(workflow, feedbackText);
+      await this.runRemediationImplementationPhase(workflow);
       this.enterDeliveryTestGate(workflow);
     });
+  }
+
+  private async handleRestartAcpSession(workflow: TaskWorkflowState): Promise<void> {
+    this.assertWorkflowStage(workflow, ["NEEDS_ACP_SESSION_DECISION"], "restart_acp_session");
+    if (!workflow.pendingRemediationPlan) {
+      throw new BridgeError(
+        ErrorCodes.WORKFLOW_INVALID_TRANSITION,
+        "当前没有可交给新 ACP 会话继续执行的整改方案",
+        false
+      );
+    }
+    if (workflow.remediationRound >= MAX_REMEDIATION_ROUNDS) {
+      workflow.stage = "NEEDS_REMEDIATION_DECISION";
+      return;
+    }
+    const ready = await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, true);
+    if (!ready) {
+      return;
+    }
+    workflow.remediationRound += 1;
+    this.launchWorkflowPhase(workflow, "RUNNING_REMEDIATION", "rework", async () => {
+      await this.runRemediationImplementationPhase(workflow);
+      this.enterDeliveryTestGate(workflow);
+    });
+  }
+
+  private async ensureWorkflowAcpSessionReadyOrDecision(
+    workflow: TaskWorkflowState,
+    allowNewSession: boolean
+  ): Promise<boolean> {
+    const result = await this.ensureWorkflowAcpSessionReady(workflow, allowNewSession);
+    if (result.ok) {
+      return true;
+    }
+    workflow.stage = "NEEDS_ACP_SESSION_DECISION";
+    workflow.activePhase = undefined;
+    workflow.activePhaseStartedAt = undefined;
+    workflow.pendingTask = undefined;
+    workflow.lastCompletedAt = now();
+    workflow.lastError = result.error;
+    return false;
+  }
+
+  private async ensureWorkflowAcpSessionReady(
+    workflow: TaskWorkflowState,
+    allowNewSession: boolean
+  ): Promise<{ ok: true } | { ok: false; error: { code: string; message: string; retryable: boolean } }> {
+    if (this.sessionApi && !allowNewSession) {
+      return { ok: true };
+    }
+
+    const initResult = await this.initSession({
+      workspace_path: workflow.workspacePath,
+      session_alias: workflow.sessionAlias,
+      session_strategy: allowNewSession ? "new" : "auto",
+      preferred_model: workflow.activeModel,
+      timeout_ms: workflow.timeoutMs
+    });
+
+    if (!initResult.success || !initResult.data) {
+      return {
+        ok: false,
+        error: initResult.error ?? {
+          code: ErrorCodes.SESSION_NOT_READY,
+          message: "当前任务对应的 ACP 会话无法恢复",
+          retryable: true
+        }
+      };
+    }
+
+    const data = initResult.data as {
+      bridge_session_id?: string;
+      current_model?: string;
+    };
+    if (data.bridge_session_id) {
+      workflow.bridgeSessionId = data.bridge_session_id;
+    }
+    if (data.current_model) {
+      workflow.activeModel = data.current_model;
+    }
+    workflow.lastError = undefined;
+    return { ok: true };
   }
 
   private async handleCancelFollowUp(
@@ -2787,6 +3254,7 @@ export class BridgeService {
   private async startWorkflow(
     input: ExecuteTaskInput,
     sessionAlias: string,
+    taskId: string,
     timeoutMs: number | undefined,
     detectedStartPhase: WorkflowEntryPhase,
     detectionEvidence: string[],
@@ -2821,6 +3289,7 @@ export class BridgeService {
 
     const workflow: TaskWorkflowState = {
       workflowId: `${Date.now()}`,
+      taskId,
       sessionAlias,
       workspacePath: input.workspace_path,
       bridgeSessionId,
@@ -2847,6 +3316,7 @@ export class BridgeService {
       silenceDecisionMs: DEFAULT_WORKFLOW_SILENCE_DECISION_MS,
       currentPollCount: 0,
       currentPollCycle: 0,
+      consecutiveTimeoutDefaultContinueCount: 0,
       progressCursorByTurn: {}
     };
 
@@ -2867,7 +3337,7 @@ export class BridgeService {
       workflow,
       "design",
       turnType,
-      this.buildDesignPrompt(workflow.requirementText, workflow.acceptanceCriteria, workflow.developmentType)
+      this.buildDesignPrompt(workflow)
     );
     workflow.steps.push(this.turnResultToStep("design", designResult));
     this.ensureTurnSuccess(designResult, "设计委派失败");
@@ -2878,12 +3348,13 @@ export class BridgeService {
       bridgeSessionId: workflow.bridgeSessionId,
       initialResult: designResult,
       requiredSections: DOCUMENT_PROFILES[workflow.developmentType].designRequiredSections,
+      outputDocumentPath: buildPhaseDocumentOutput("design", workflow.sessionAlias, workflow.workspacePath).absolutePath,
       errorCode: ErrorCodes.DESIGN_GATE_FAILED,
       maxRounds: workflow.maxReworkRounds,
       timeoutMs: workflow.timeoutMs,
       steps: workflow.steps,
       repairPromptBuilder: (missingSections, round) =>
-        this.buildDesignRepairPrompt(round, missingSections, workflow.acceptanceCriteria, workflow.developmentType)
+        this.buildDesignRepairPrompt(workflow, round, missingSections)
     });
 
     workflow.phaseGates.design = {
@@ -2899,7 +3370,7 @@ export class BridgeService {
       workflow,
       "design-feedback",
       "rework",
-      this.buildDesignFeedbackPrompt(feedback, workflow.acceptanceCriteria, workflow.developmentType)
+      this.buildDesignFeedbackPrompt(workflow, feedback)
     );
     workflow.steps.push(this.turnResultToStep("design", result));
     this.ensureTurnSuccess(result, "设计修订委派失败");
@@ -2910,12 +3381,13 @@ export class BridgeService {
       bridgeSessionId: workflow.bridgeSessionId,
       initialResult: result,
       requiredSections: DOCUMENT_PROFILES[workflow.developmentType].designRequiredSections,
+      outputDocumentPath: buildPhaseDocumentOutput("design", workflow.sessionAlias, workflow.workspacePath).absolutePath,
       errorCode: ErrorCodes.DESIGN_GATE_FAILED,
       maxRounds: workflow.maxReworkRounds,
       timeoutMs: workflow.timeoutMs,
       steps: workflow.steps,
       repairPromptBuilder: (missingSections, round) =>
-        this.buildDesignRepairPrompt(round, missingSections, workflow.acceptanceCriteria, workflow.developmentType)
+        this.buildDesignRepairPrompt(workflow, round, missingSections)
     });
 
     workflow.phaseGates.design = {
@@ -2931,7 +3403,7 @@ export class BridgeService {
       workflow,
       "planning",
       "rework",
-      this.buildPlanningPrompt(workflow.requirementText, workflow.acceptanceCriteria, workflow.developmentType)
+      this.buildPlanningPrompt(workflow)
     );
     workflow.steps.push(this.turnResultToStep("planning", planningResult));
     this.ensureTurnSuccess(planningResult, "计划委派失败");
@@ -2942,12 +3414,13 @@ export class BridgeService {
       bridgeSessionId: workflow.bridgeSessionId,
       initialResult: planningResult,
       requiredSections: DOCUMENT_PROFILES[workflow.developmentType].planningRequiredSections,
+      outputDocumentPath: buildPhaseDocumentOutput("planning", workflow.sessionAlias, workflow.workspacePath).absolutePath,
       errorCode: ErrorCodes.PLANNING_GATE_FAILED,
       maxRounds: workflow.maxReworkRounds,
       timeoutMs: workflow.timeoutMs,
       steps: workflow.steps,
       repairPromptBuilder: (missingSections, round) =>
-        this.buildPlanningRepairPrompt(round, missingSections, workflow.acceptanceCriteria, workflow.developmentType)
+        this.buildPlanningRepairPrompt(workflow, round, missingSections)
     });
 
     workflow.phaseGates.planning = {
@@ -2963,7 +3436,7 @@ export class BridgeService {
       workflow,
       "planning-feedback",
       "rework",
-      this.buildPlanningFeedbackPrompt(feedback, workflow.acceptanceCriteria, workflow.developmentType)
+      this.buildPlanningFeedbackPrompt(workflow, feedback)
     );
     workflow.steps.push(this.turnResultToStep("planning", result));
     this.ensureTurnSuccess(result, "计划修订委派失败");
@@ -2974,12 +3447,13 @@ export class BridgeService {
       bridgeSessionId: workflow.bridgeSessionId,
       initialResult: result,
       requiredSections: DOCUMENT_PROFILES[workflow.developmentType].planningRequiredSections,
+      outputDocumentPath: buildPhaseDocumentOutput("planning", workflow.sessionAlias, workflow.workspacePath).absolutePath,
       errorCode: ErrorCodes.PLANNING_GATE_FAILED,
       maxRounds: workflow.maxReworkRounds,
       timeoutMs: workflow.timeoutMs,
       steps: workflow.steps,
       repairPromptBuilder: (missingSections, round) =>
-        this.buildPlanningRepairPrompt(round, missingSections, workflow.acceptanceCriteria, workflow.developmentType)
+        this.buildPlanningRepairPrompt(workflow, round, missingSections)
     });
 
     workflow.phaseGates.planning = {
@@ -3022,31 +3496,13 @@ export class BridgeService {
     };
   }
 
-  private async runRemediationPlanPhase(workflow: TaskWorkflowState, failureText: string): Promise<void> {
-    await this.setWorkflowAgentMode(workflow, "plan", true);
-    const result = await this.executeWorkflowTurnWithModelFallback(
-      workflow,
-      `remediation-plan-${workflow.remediationRound + 1}`,
-      "rework",
-      this.buildRemediationPlanPrompt(workflow, failureText)
-    );
-    workflow.steps.push(this.turnResultToStep("rework", result));
-    this.ensureTurnSuccess(result, "整改方案与计划生成失败");
-    const data = result.data as { summary?: string } | undefined;
-    workflow.pendingRemediationPlan = data?.summary ?? failureText;
-    workflow.stage = "DELIVERY_TEST_FAILED";
-  }
-
-  private async runRemediationImplementationPhase(
-    workflow: TaskWorkflowState,
-    feedbackText: string | undefined
-  ): Promise<void> {
+  private async runRemediationImplementationPhase(workflow: TaskWorkflowState): Promise<void> {
     await this.setWorkflowAgentMode(workflow, "build", true);
     const result = await this.executeWorkflowTurnWithModelFallback(
       workflow,
       `remediation-implementation-${workflow.remediationRound}`,
       "rework",
-      this.buildRemediationImplementationPrompt(workflow, feedbackText)
+      this.buildRemediationImplementationPrompt(workflow)
     );
     workflow.steps.push(this.turnResultToStep("rework", result));
     this.ensureTurnSuccess(result, `第 ${workflow.remediationRound} 次整改实施失败`);
@@ -3065,6 +3521,7 @@ export class BridgeService {
         "实施阶段必须满足 1-2 分钟持续跟进节奏；未到下一次持续跟进时间前，不向用户输出暂无进展。"
     };
     const base = {
+      task_id: workflow.taskId,
       session_alias: workflow.sessionAlias,
       bridge_session_id: workflow.bridgeSessionId,
       detected_start_phase: workflow.detectedStartPhase,
@@ -3094,14 +3551,34 @@ export class BridgeService {
         decision_basis: "silence_timeout",
         current_poll_count: workflow.currentPollCount,
         current_poll_cycle: workflow.currentPollCycle,
+        consecutive_timeout_defaults: workflow.consecutiveTimeoutDefaultContinueCount,
         next_poll_due_at: nextFollowUpAt
       },
       follow_up_policy: followUpPolicy,
+      user_decision_policy: this.buildUserDecisionPolicy(workflow),
       progress_update: this.toProgressUpdatePayload(workflow),
       phase_gates: this.toPhaseGatesPayload(workflow),
       steps: workflow.steps
     };
     return base;
+  }
+
+  private buildUserDecisionPolicy(workflow: TaskWorkflowState): Record<string, unknown> {
+    const allowTimeoutDefault = this.canUseTimeoutDefaultContinue(workflow);
+    const waitingForDecision = workflow.stage === "NEEDS_USER_DECISION";
+    return {
+      decision_prompt_required: waitingForDecision,
+      allow_timeout_default: allowTimeoutDefault,
+      default_action: allowTimeoutDefault ? "continue_wait" : null,
+      timeout_default_after_seconds: Math.floor(DEFAULT_USER_DECISION_TIMEOUT_DEFAULT_AFTER_MS / 1000),
+      consecutive_timeout_defaults: workflow.consecutiveTimeoutDefaultContinueCount,
+      consecutive_timeout_default_limit: MAX_CONSECUTIVE_TIMEOUT_DEFAULT_CONTINUES,
+      requires_explicit_user_decision: waitingForDecision && !allowTimeoutDefault,
+      timeout_default_decision_source: "timeout_default",
+      user_selected_decision_source: "user_selected",
+      guidance:
+        "每次无进展决策都必须先提示用户；允许默认继续时，用户在倒计时内无响应才可用 timeout_default 调用 continue_wait。用户明确选择或 ACP 返回新进展会清空连续无人响应计数。"
+    };
   }
 
   private buildWorkflowStatusResponse(workflow: TaskWorkflowState): Record<string, unknown> {
@@ -3159,9 +3636,17 @@ export class BridgeService {
         current_stage: "REMEDIATION_REVIEW",
         workflow_status: "DELIVERY_TEST_FAILED",
         business_stage: "整改方案确认",
-        user_message: "交付测试失败，当前不能声明完成。请审核整改方案和整改计划，确认后进入当前整改实施。",
-        next_business_action: "确认整改方案和整改计划，或选择主会话接手",
-        next_action_required: ["remediation_approve", "handoff_to_main"]
+        user_message:
+          "交付测试失败，当前不能声明完成。主会话必须根据失败材料生成整改方案和整改计划，展示给用户确认；确认后调用 remediation_approve，并把完整整改方案和整改计划放入 feedback_text。",
+        next_business_action: "主会话生成整改方案和整改计划，用户确认后交给 ACP 执行整改",
+        next_action_required: ["remediation_approve", "handoff_to_main"],
+        required_main_action: {
+          action: "write_remediation_plan",
+          source: "main_session",
+          input: "delivery_test_failures",
+          output: "feedback_text for remediation_approve",
+          rule: "整改方案和整改计划由主会话生成；ACP 只在用户确认后执行整改实施"
+        }
       };
     }
     if (workflow.stage === "RUNNING_REMEDIATION") {
@@ -3172,6 +3657,28 @@ export class BridgeService {
         business_stage: "整改实施",
         user_message: "已进入整改实施阶段，我会按 1-2 分钟节奏持续跟进整改进展。",
         next_action_required: ["status"]
+      };
+    }
+    if (workflow.stage === "NEEDS_ACP_SESSION_DECISION") {
+      return {
+        ...base,
+        current_stage: "NEEDS_ACP_SESSION_DECISION",
+        workflow_status: "NEEDS_ACP_SESSION_DECISION",
+        business_stage: "执行会话恢复决策",
+        user_message:
+          "当前任务对应的 ACP 会话无法恢复，插件不能静默更换执行上下文。现在必须由用户决定：主会话接手继续，或启动新的 ACP 会话继续当前任务。",
+        next_business_action: "等待用户选择主会话接手，或启动新的 ACP 会话继续当前任务",
+        next_action_required: ["handoff_to_main", "restart_acp_session"],
+        user_options: [
+          {
+            action: "handoff_to_main",
+            description: "主会话接手：停止依赖原 ACP 会话，由主会话继续处理当前任务"
+          },
+          {
+            action: "restart_acp_session",
+            description: "启动新的 ACP 会话：保留当前任务、失败材料和整改方案，重新创建 ACP 会话继续实施"
+          }
+        ]
       };
     }
     if (workflow.stage === "NEEDS_REMEDIATION_DECISION") {
@@ -3199,20 +3706,38 @@ export class BridgeService {
       if (this.restoredWorkflowCannotStream(workflow)) {
         return this.buildRestoredWorkflowDecisionResponse(workflow);
       }
+      const userDecisionPolicy = this.buildUserDecisionPolicy(workflow);
+      const allowTimeoutDefault = userDecisionPolicy.allow_timeout_default === true;
       return {
         ...base,
         current_stage: "NEEDS_USER_DECISION",
+        business_stage: "等待用户决策",
+        user_message: allowTimeoutDefault
+          ? "当前超过约定时间仍无新进展。现在必须进行一次用户决策：继续等待或主会话接手。60 秒内没有用户选择时，主会话必须按超时默认规则继续等待。"
+          : "当前已经连续 3 次无人响应后默认继续等待。现在必须由用户明确选择继续等待或主会话接手；主会话不得再使用超时默认继续。",
+        next_business_action: allowTimeoutDefault
+          ? "立即提示用户选择，并启动 60 秒倒计时；倒计时结束仍无选择时，必须用 decision_source=timeout_default 继续等待"
+          : "停住并等待用户明确选择；禁止继续使用超时默认动作",
         next_action_required: ["continue_wait", "handoff_to_main"],
         user_options: [
           {
             action: "continue_wait",
-            description: "继续等待：继续按 1-2 分钟节奏持续跟进；超过约定时间仍无新进展时再请你决策"
+            decision_source: "user_selected",
+            description: "继续等待：用户明确选择继续，清空连续无人响应默认继续计数"
           },
           {
             action: "handoff_to_main",
             description: "主会话接手：停止 ACP 执行，由主会话继续处理"
           }
-        ]
+        ],
+        timeout_default_option: allowTimeoutDefault
+          ? {
+              action: "continue_wait",
+              decision_source: "timeout_default",
+              after_seconds: Math.floor(DEFAULT_USER_DECISION_TIMEOUT_DEFAULT_AFTER_MS / 1000),
+              description: "倒计时结束仍无用户选择时，主会话必须按该动作继续等待"
+            }
+          : null
       };
     }
     if (workflow.stage === "TRANSFERRED_TO_MAIN") {
@@ -3485,8 +4010,10 @@ export class BridgeService {
       "1) 不使用“置信度/阈值”表达；只给出单一明确结论。",
       "2) 若上下文模棱两可、冲突或不足以明确阶段，必须返回 need_user_input，禁止猜测阶段。",
       "3) 若结论为 need_user_input，必须在 missing_context 中列出最少必需项。",
-      "4) 仅输出 JSON，不要输出任何额外文本。",
-      "5) JSON schema:",
+      "4) 判定为 planning 的前提是已经能看到方案正文，或能看到可读取的方案文档路径；不能只因为用户说“做计划”就跳过方案来源。",
+      "5) 如果方案是主会话刚生成的文件，planning 必须基于该方案文件路径；如果方案是用户直接提供的正文，planning 必须基于该正文。",
+      "6) 仅输出 JSON，不要输出任何额外文本。",
+      "7) JSON schema:",
       '{"phase":"design|planning|implementation|need_user_input","missing_context":["..."],"reason":"..."}',
       "",
       "需求：",
@@ -3497,19 +4024,16 @@ export class BridgeService {
     ].join("\n");
   }
 
-  private buildDesignPrompt(
-    requirementText: string,
-    acceptanceCriteria?: string,
-    developmentType: DevelopmentType = "feature"
-  ): string {
-    const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
-    const profile = DOCUMENT_PROFILES[developmentType];
+  private buildDesignPrompt(workflow: TaskWorkflowState): string {
+    const acceptance = workflow.acceptanceCriteria?.trim() ? workflow.acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[workflow.developmentType];
     const guide = readSkillGuideDocument(profile.designGuideFile);
     return [
       "你是团队中的架构设计负责人。",
       `当前开发类型是${profile.label}。`,
       "当前阶段是 Design。插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容编写。",
       ...buildGuideDocumentPromptBlock(guide),
+      ...buildDocumentOutputPromptLines("design", workflow.sessionAlias, workflow.workspacePath),
       "请输出一份可执行规范文档，必须按以下章节顺序给出，并使用 markdown 二级标题：",
       ...profile.designRequiredSections.map((section) => `## ${section}`),
       "",
@@ -3518,30 +4042,64 @@ export class BridgeService {
       "2) 每个关键要求必须可验证。",
       "3) 每个关键流程必须有失败回退路径。",
       "4) 不得省略上述任一章节。",
-      "5) 指南全文已经在本提示词中提供，本阶段禁止执行工具调用；直接输出设计文档。",
+      "5) 指南全文已经在本提示词中提供，必须把设计文档落盘到指定路径。",
       "6) 禁止读取用户项目目录下的 docs 或 docs/superpowers 作为本阶段指南。",
       "",
       "需求如下：",
-      requirementText,
+      workflow.requirementText,
       "",
       `验收标准：${acceptance}`,
       "最后一行请输出：STATUS: DESIGN_READY"
     ].join("\n");
   }
 
-  private buildPlanningPrompt(
-    requirementText: string,
-    acceptanceCriteria?: string,
-    developmentType: DevelopmentType = "feature"
-  ): string {
-    const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
-    const profile = DOCUMENT_PROFILES[developmentType];
+  private buildPlanningSourcePromptLines(workflow: TaskWorkflowState): string[] {
+    const fileContext = this.loadContextFromReferencedDocsSync(workflow.workspacePath, workflow.requirementText);
+    const lines = [
+      "方案对齐要求：",
+      "- 计划必须根据已经确认的方案展开，不能凭空新增、删除或改写方案承诺。",
+      "- 计划文档必须写明“方案来源”，并逐项对齐方案中的设计目标、业务流程、UI/交互契约、API 契约、状态机、数据模型、配置项、权限规则、异常处理矩阵和验收标准。"
+    ];
+
+    if (fileContext.loadedPaths.length > 0) {
+      lines.push(
+        `- 方案来源类型：方案文档路径。已读取：${fileContext.loadedPaths.join(" | ")}`,
+        "- 必须以以下方案文档全文作为计划输入：",
+        fileContext.content
+      );
+      if (fileContext.failedPaths.length > 0) {
+        lines.push(`- 以下方案路径读取失败，不能忽略：${fileContext.failedPaths.join(" | ")}`);
+      }
+      return lines;
+    }
+
+    if (fileContext.failedPaths.length > 0) {
+      lines.push(
+        `- 方案来源类型：方案文档路径，但读取失败：${fileContext.failedPaths.join(" | ")}`,
+        "- 不得凭空写计划；必须要求补充可读取的方案文档路径或方案正文。"
+      );
+      return lines;
+    }
+
+    lines.push(
+      "- 方案来源类型：用户在 requirement_text 中提供的方案正文。",
+      "- 必须以 requirement_text 中的方案内容为计划依据；如果 requirement_text 实际没有方案内容，不得编写计划，必须要求补充方案来源。",
+      "- 若方案是主会话刚生成的文档，主会话重新 start 时必须把方案文件路径写入 requirement_text。"
+    );
+    return lines;
+  }
+
+  private buildPlanningPrompt(workflow: TaskWorkflowState): string {
+    const acceptance = workflow.acceptanceCriteria?.trim() ? workflow.acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[workflow.developmentType];
     const guide = readSkillGuideDocument(profile.planningGuideFile);
     return [
       "你是团队中的实施计划负责人。",
       `当前开发类型是${profile.label}。`,
       "当前阶段是 Planning。插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容编写。",
       ...buildGuideDocumentPromptBlock(guide),
+      ...this.buildPlanningSourcePromptLines(workflow),
+      ...buildDocumentOutputPromptLines("planning", workflow.sessionAlias, workflow.workspacePath),
       "请输出一份完整计划，必须按以下章节顺序给出，并使用 markdown 二级标题：",
       ...profile.planningRequiredSections.map((section) => `## ${section}`),
       "",
@@ -3550,11 +4108,11 @@ export class BridgeService {
       "2) 必须包含业务场景、Task 拆分和验证命令。",
       "3) 必须定义失败修复与复测闭环。",
       "4) 不得省略上述任一章节。",
-      "5) 指南全文已经在本提示词中提供，本阶段禁止执行工具调用；直接输出计划文档。",
+      "5) 指南全文已经在本提示词中提供，必须把计划文档落盘到指定路径。",
       "6) 禁止读取用户项目目录下的 docs 或 docs/superpowers 作为本阶段指南。",
       "",
       "需求如下：",
-      requirementText,
+      workflow.requirementText,
       "",
       `验收标准：${acceptance}`,
       "最后一行请输出：STATUS: PLAN_READY"
@@ -3562,19 +4120,19 @@ export class BridgeService {
   }
 
   private buildDesignRepairPrompt(
+    workflow: TaskWorkflowState,
     round: number,
-    missingSections: string[],
-    acceptanceCriteria?: string,
-    developmentType: DevelopmentType = "feature"
+    missingSections: string[]
   ): string {
-    const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
-    const profile = DOCUMENT_PROFILES[developmentType];
+    const acceptance = workflow.acceptanceCriteria?.trim() ? workflow.acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[workflow.developmentType];
     const guide = readSkillGuideDocument(profile.designGuideFile);
     return [
       `Design 门禁未通过，正在执行第 ${round} 轮补全。`,
       `当前开发类型是${profile.label}，插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容补全文档。`,
       ...buildGuideDocumentPromptBlock(guide),
-      "请仅补齐缺失章节并输出完整设计文档，章节顺序保持不变。",
+      ...buildDocumentOutputPromptLines("design", workflow.sessionAlias, workflow.workspacePath),
+      "请仅补齐缺失章节并把完整设计文档写回指定文件，章节顺序保持不变。",
       `缺失章节：${missingSections.join("、")}`,
       "",
       `验收标准：${acceptance}`,
@@ -3583,18 +4141,18 @@ export class BridgeService {
   }
 
   private buildDesignFeedbackPrompt(
-    feedback: string,
-    acceptanceCriteria?: string,
-    developmentType: DevelopmentType = "feature"
+    workflow: TaskWorkflowState,
+    feedback: string
   ): string {
-    const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
-    const profile = DOCUMENT_PROFILES[developmentType];
+    const acceptance = workflow.acceptanceCriteria?.trim() ? workflow.acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[workflow.developmentType];
     const guide = readSkillGuideDocument(profile.designGuideFile);
     return [
-      "用户对 Design 阶段提出了反馈，请在保留结构化章节的前提下完成修订，并输出完整文档。",
+      "用户对 Design 阶段提出了反馈，请在保留结构化章节的前提下完成修订，并把完整文档写回指定文件。",
       `当前开发类型是${profile.label}，插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容修订文档。`,
       ...buildGuideDocumentPromptBlock(guide),
-      "指南全文已经在本提示词中提供，禁止执行工具调用；直接输出修订后的文档。",
+      ...buildDocumentOutputPromptLines("design", workflow.sessionAlias, workflow.workspacePath),
+      "指南全文已经在本提示词中提供，必须把修订后的设计文档落盘到指定路径。",
       `用户反馈：${feedback}`,
       "",
       `验收标准：${acceptance}`,
@@ -3603,19 +4161,20 @@ export class BridgeService {
   }
 
   private buildPlanningRepairPrompt(
+    workflow: TaskWorkflowState,
     round: number,
-    missingSections: string[],
-    acceptanceCriteria?: string,
-    developmentType: DevelopmentType = "feature"
+    missingSections: string[]
   ): string {
-    const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
-    const profile = DOCUMENT_PROFILES[developmentType];
+    const acceptance = workflow.acceptanceCriteria?.trim() ? workflow.acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[workflow.developmentType];
     const guide = readSkillGuideDocument(profile.planningGuideFile);
     return [
       `Planning 门禁未通过，正在执行第 ${round} 轮补全。`,
       `当前开发类型是${profile.label}，插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容补全计划。`,
       ...buildGuideDocumentPromptBlock(guide),
-      "请仅补齐缺失章节并输出完整计划，章节顺序保持不变。",
+      ...this.buildPlanningSourcePromptLines(workflow),
+      ...buildDocumentOutputPromptLines("planning", workflow.sessionAlias, workflow.workspacePath),
+      "请仅补齐缺失章节并把完整计划文档写回指定文件，章节顺序保持不变。",
       `缺失章节：${missingSections.join("、")}`,
       "",
       `验收标准：${acceptance}`,
@@ -3624,18 +4183,19 @@ export class BridgeService {
   }
 
   private buildPlanningFeedbackPrompt(
-    feedback: string,
-    acceptanceCriteria?: string,
-    developmentType: DevelopmentType = "feature"
+    workflow: TaskWorkflowState,
+    feedback: string
   ): string {
-    const acceptance = acceptanceCriteria?.trim() ? acceptanceCriteria.trim() : "无额外验收标准";
-    const profile = DOCUMENT_PROFILES[developmentType];
+    const acceptance = workflow.acceptanceCriteria?.trim() ? workflow.acceptanceCriteria.trim() : "无额外验收标准";
+    const profile = DOCUMENT_PROFILES[workflow.developmentType];
     const guide = readSkillGuideDocument(profile.planningGuideFile);
     return [
-      "用户对 Planning 阶段提出了反馈，请在保留结构化章节的前提下完成修订，并输出完整计划。",
+      "用户对 Planning 阶段提出了反馈，请在保留结构化章节的前提下完成修订，并把完整计划写回指定文件。",
       `当前开发类型是${profile.label}，插件已经把必须遵循的指南全文放入本提示词，你必须严格按照指南内容修订计划。`,
       ...buildGuideDocumentPromptBlock(guide),
-      "指南全文已经在本提示词中提供，禁止执行工具调用；直接输出修订后的计划。",
+      ...this.buildPlanningSourcePromptLines(workflow),
+      ...buildDocumentOutputPromptLines("planning", workflow.sessionAlias, workflow.workspacePath),
+      "指南全文已经在本提示词中提供，必须把修订后的计划文档落盘到指定路径。",
       `用户反馈：${feedback}`,
       "",
       `验收标准：${acceptance}`,
@@ -3677,36 +4237,11 @@ export class BridgeService {
     ].join("\n");
   }
 
-  private buildRemediationPlanPrompt(workflow: TaskWorkflowState, failureText: string): string {
+  private buildRemediationImplementationPrompt(workflow: TaskWorkflowState): string {
     const acceptance = workflow.acceptanceCriteria?.trim() ? workflow.acceptanceCriteria.trim() : "无额外验收标准";
-    return [
-      "交付测试失败，当前不能声明完成。",
-      "请基于失败材料形成整改方案和整改计划，输出必须包含：",
-      "1) 失败事实摘要",
-      "2) 根因假设",
-      "3) 整改方案",
-      "4) 整改实施计划",
-      "5) 同一条业务交付测试复测方式",
-      "",
-      `当前整改轮次：${workflow.remediationRound + 1}/${MAX_REMEDIATION_ROUNDS}`,
-      `验收标准：${acceptance}`,
-      "",
-      "失败材料：",
-      failureText,
-      "",
-      "最后一行请输出：STATUS: PLAN_READY"
-    ].join("\n");
-  }
-
-  private buildRemediationImplementationPrompt(
-    workflow: TaskWorkflowState,
-    feedbackText: string | undefined
-  ): string {
-    const acceptance = workflow.acceptanceCriteria?.trim() ? workflow.acceptanceCriteria.trim() : "无额外验收标准";
-    const userFeedback = feedbackText?.trim() ? feedbackText.trim() : "用户已确认按当前整改方案和计划执行。";
     return [
       `你正在执行第 ${workflow.remediationRound}/${MAX_REMEDIATION_ROUNDS} 次交付整改。`,
-      "请严格按照当前整改方案和整改计划实施，不要扩大范围。",
+      "以下整改方案和整改计划由主会话根据真实交付测试失败材料生成，并已经过用户确认。你只负责按该方案执行修改，不要重新制定方案，不要扩大范围。",
       "输出内容必须包含：",
       "1) 本次整改完成事项",
       "2) 关键修改说明",
@@ -3716,10 +4251,9 @@ export class BridgeService {
       `验收标准：${acceptance}`,
       "",
       "整改方案和计划：",
-      workflow.pendingRemediationPlan ?? "未记录整改方案和计划，请基于最近失败材料实施最小整改。",
+      workflow.pendingRemediationPlan ?? "未记录整改方案和计划；当前不能执行整改。",
       "",
-      "用户确认或补充要求：",
-      userFeedback,
+      "用户确认：已确认按上述整改方案和整改计划执行。",
       "",
       "最后一行请输出：STATUS: DONE"
     ].join("\n");
@@ -3742,6 +4276,7 @@ export class BridgeService {
     bridgeSessionId: string;
     initialResult: BridgeResult<unknown>;
     requiredSections: string[];
+    outputDocumentPath?: string;
     errorCode: ErrorCode;
     maxRounds: number;
     timeoutMs?: number;
@@ -3760,7 +4295,11 @@ export class BridgeService {
 
     while (attempts <= Math.max(input.maxRounds, 0) + 1) {
       this.ensureTurnSuccess(currentResult, `${input.phase} 阶段执行失败`);
-      const evaluation = await this.evaluateRequiredSections(currentResult, input.requiredSections);
+      const evaluation = await this.evaluateRequiredSections(
+        currentResult,
+        input.requiredSections,
+        input.outputDocumentPath
+      );
       if (evaluation.passed) {
         return {
           passed: true,
@@ -3798,7 +4337,8 @@ export class BridgeService {
 
   private async evaluateRequiredSections(
     result: BridgeResult<unknown>,
-    requiredSections: string[]
+    requiredSections: string[],
+    outputDocumentPath?: string
   ): Promise<{ passed: boolean; missingSections: string[] }> {
     if (!result.success || !result.data) {
       return {
@@ -3807,11 +4347,28 @@ export class BridgeService {
       };
     }
     const data = result.data as { turn_id?: string; summary?: string };
-    const mergedText = await this.collectTurnOutputText(data.turn_id, data.summary ?? "");
+    const chunks = [await this.collectTurnOutputText(data.turn_id, data.summary ?? "")];
+    let outputDocumentReadable = true;
+    if (outputDocumentPath) {
+      try {
+        const documentText = readFileSync(outputDocumentPath, "utf8");
+        if (documentText.trim().length > 0) {
+          chunks.push(documentText);
+        } else {
+          outputDocumentReadable = false;
+        }
+      } catch {
+        outputDocumentReadable = false;
+      }
+    }
+    const mergedText = chunks.join("\n\n");
     const normalized = this.normalizeForMatch(mergedText);
     const missingSections = requiredSections.filter(
       (section) => !normalized.includes(this.normalizeForMatch(section))
     );
+    if (outputDocumentPath && !outputDocumentReadable) {
+      missingSections.unshift("输出文档文件");
+    }
     return {
       passed: missingSections.length === 0,
       missingSections

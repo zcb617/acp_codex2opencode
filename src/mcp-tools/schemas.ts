@@ -45,6 +45,7 @@ export const CloseSchema = z.object({
 export const ExecuteTaskSchema = z.object({
   workspace_path: z.string().min(1),
   requirement_text: z.string().min(1),
+  task_id: z.string().min(1).optional(),
   session_alias: z.string().min(1).optional(),
   design_planning_executor: z.enum(["main", "acp"]).optional(),
   development_type: z.enum(["feature", "bugfix", "need_user_input"]).optional(),
@@ -71,9 +72,11 @@ export const ExecuteTaskSchema = z.object({
       "delivery_test_pass",
       "delivery_test_fail",
       "remediation_approve",
+      "restart_acp_session",
       "cancel_follow_up"
     ])
     .optional(),
+  decision_source: z.enum(["user_selected", "timeout_default"]).optional(),
   feedback_text: z.string().min(1).optional(),
   preferred_model: z.string().min(1).optional(),
   acceptance_criteria: z.string().min(1).optional(),
@@ -82,11 +85,11 @@ export const ExecuteTaskSchema = z.object({
   timeout_ms: z.number().int().positive().max(MAX_TIMEOUT_MS).optional()
 }).superRefine((value, ctx) => {
   const action = value.action ?? "start";
-  if (action !== "start" && !value.session_alias) {
+  if (action !== "start" && !value.session_alias && !value.task_id) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["session_alias"],
-      message: "非 start 动作必须提供 session_alias"
+      message: "非 start 动作必须提供 session_alias 或 task_id"
     });
   }
   const needsFeedback = action === "design_feedback" || action === "planning_feedback";
@@ -102,6 +105,13 @@ export const ExecuteTaskSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["feedback_text"],
       message: "交付测试失败时必须提供失败材料"
+    });
+  }
+  if (action === "remediation_approve" && !value.feedback_text?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["feedback_text"],
+      message: "整改确认时必须提供主会话生成并经用户确认的整改方案和计划"
     });
   }
   if (action === "model_confirm" && !value.model_confirm_choice) {

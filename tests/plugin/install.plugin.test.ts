@@ -10,6 +10,31 @@ const guideFiles = [
   "可交付BUG修改计划编写指南-v0.1.md"
 ];
 
+const universalDeliveryRequirements = [
+  "项目类型只决定",
+  "服务器端程序",
+  "桌面端程序",
+  "APP 端程序",
+  "网页端程序",
+  "monkeypatch",
+  "不 mock 保存逻辑",
+  "执行前状态快照",
+  "键级",
+  "逐项通过",
+  "逐项失败",
+  "禁止只在对话"
+];
+
+const clientUiDesignRequirements = [
+  "整体风格",
+  "按钮风格",
+  "色彩体系",
+  "主题色",
+  "DPI",
+  "截图",
+  "录屏"
+];
+
 describe("PT-01 plugin install contract", () => {
   it("should provide a valid plugin manifest and mcp config path", async () => {
     const raw = await readFile(join(root, ".codex-plugin", "plugin.json"), "utf8");
@@ -69,6 +94,19 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("实施阶段必须满足 1-2 分钟持续跟进节奏");
     expect(skill).toContain("禁止提前向用户输出暂无进展");
     expect(skill).toContain("持续跟进");
+    expect(skill).toContain("方案/计划必须落成文件");
+    expect(skill).toContain("required_output_document.relative_path");
+    expect(skill).toContain("docs/superpowers/specs/<YYYY-MM-DD>-<session_alias>-design.md");
+    expect(skill).toContain("docs/superpowers/plans/<YYYY-MM-DD>-<session_alias>-plan.md");
+    expect(skill).toContain("计划必须对齐方案来源");
+    expect(skill).toContain("design_document_paths");
+    expect(skill).toContain("inline_design_from_requirement");
+    expect(skill).toContain("allow_timeout_default");
+    expect(skill).toContain("decision_source=timeout_default");
+    expect(skill).toContain("decision_source=user_selected");
+    expect(skill).toContain("交付测试失败必须由主会话制定整改方案和整改计划");
+    expect(skill).toContain("必须把完整整改方案和整改计划放入 `feedback_text`");
+    expect(skill).toContain("ACP 只执行整改实施");
     expect(skill).not.toContain("轮询");
     expect(skill).not.toContain("监控");
     expect(skill).not.toContain("沉默");
@@ -87,6 +125,64 @@ describe("PT-01 plugin install contract", () => {
       await expect(access(guidePath)).resolves.toBeUndefined();
       const guide = await readFile(guidePath, "utf8");
       expect(guide.trim().length).toBeGreaterThan(1000);
+    }
+  });
+
+  it("should require design-aligned delivery evidence in all guide docs", async () => {
+    const guideDirs = [
+      join(root, "docs"),
+      join(root, "skills", "team-delegate", "docs")
+    ];
+
+    for (const guideDir of guideDirs) {
+      for (const guideFile of guideFiles) {
+        const guide = await readFile(join(guideDir, guideFile), "utf8");
+        expect(guide).toMatch(/设计方案|设计承诺/u);
+        for (const requirement of universalDeliveryRequirements) {
+          expect(guide).toContain(requirement);
+        }
+      }
+    }
+  });
+
+  it("should require client UI visual design in feature and bugfix design guides", async () => {
+    const designGuideFiles = [
+      "可交付开发设计文档编写指南-v0.1.md",
+      "可交付BUG修改设计文档编写指南-v0.1.md"
+    ];
+    const guideDirs = [
+      join(root, "docs"),
+      join(root, "skills", "team-delegate", "docs")
+    ];
+
+    for (const guideDir of guideDirs) {
+      for (const guideFile of designGuideFiles) {
+        const guide = await readFile(join(guideDir, guideFile), "utf8");
+        for (const requirement of clientUiDesignRequirements) {
+          expect(guide).toContain(requirement);
+        }
+      }
+    }
+  });
+
+  it("should require planning guides to align plans with design sources", async () => {
+    const planningGuideFiles = [
+      "可交付开发计划编写指南-v0.1.md",
+      "可交付BUG修改计划编写指南-v0.1.md"
+    ];
+    const guideDirs = [
+      join(root, "docs"),
+      join(root, "skills", "team-delegate", "docs")
+    ];
+
+    for (const guideDir of guideDirs) {
+      for (const guideFile of planningGuideFiles) {
+        const guide = await readFile(join(guideDir, guideFile), "utf8");
+        expect(guide).toContain("必须基于已经确认");
+        expect(guide).toContain("必须读取对应的设计文档文件路径");
+        expect(guide).toContain("以用户提供");
+        expect(guide).toContain("必须写明");
+      }
     }
   });
 });

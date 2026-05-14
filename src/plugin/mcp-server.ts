@@ -76,10 +76,11 @@ async function main(): Promise<void> {
     "delegate.task.execute",
     {
       description:
-        "高层委派入口：按业务阶段推进方案、计划、实施、交付测试和整改闭环；实施完成后必须等待真实业务交付测试，通过后才完成，失败后进入整改方案、整改计划、整改实施和复测。返回 next_action_required 不包含 continue_wait 时，必须停止持续跟进并向用户输出 user_message。",
+        "高层委派入口：按业务阶段推进方案、计划、实施、交付测试和整改闭环；实施完成后必须等待真实业务交付测试，通过后才完成；失败后由主会话生成整改方案和整改计划，用户确认后通过 remediation_approve 交给 ACP 执行整改并复测。返回 next_action_required 不包含 continue_wait 时，必须停止持续跟进并向用户输出 user_message。",
       inputSchema: z.object({
         workspace_path: z.string(),
         requirement_text: z.string(),
+        task_id: z.string().optional(),
         session_alias: z.string().optional(),
         design_planning_executor: z.enum(["main", "acp"]).optional(),
         development_type: z.enum(["feature", "bugfix", "need_user_input"]).optional(),
@@ -106,9 +107,11 @@ async function main(): Promise<void> {
             "delivery_test_pass",
             "delivery_test_fail",
             "remediation_approve",
+            "restart_acp_session",
             "cancel_follow_up"
           ])
           .optional(),
+        decision_source: z.enum(["user_selected", "timeout_default"]).optional(),
         feedback_text: z.string().optional(),
         preferred_model: z.string().optional(),
         acceptance_criteria: z.string().optional(),

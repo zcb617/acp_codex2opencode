@@ -70,9 +70,11 @@ describe("DS-01~DS-03 delivery contracts", () => {
       workspace_path: "D:/repo/demo",
       requirement_text: "需求",
       session_alias: "delegate-task-001",
-      action: "continue_wait"
+      action: "continue_wait",
+      decision_source: "timeout_default"
     });
     expect(continueWait.action).toBe("continue_wait");
+    expect(continueWait.decision_source).toBe("timeout_default");
 
     const handoff = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
@@ -114,9 +116,18 @@ describe("DS-01~DS-03 delivery contracts", () => {
       requirement_text: "需求",
       session_alias: "delegate-task-001",
       action: "remediation_approve",
-      feedback_text: "确认按整改方案执行"
+      feedback_text: "整改方案：修复失败链路。\n整改计划：执行修改后复测同一条真实交付链路。"
     });
     expect(remediationApprove.action).toBe("remediation_approve");
+
+    expect(() =>
+      ExecuteTaskSchema.parse({
+        workspace_path: "D:/repo/demo",
+        requirement_text: "需求",
+        session_alias: "delegate-task-001",
+        action: "remediation_approve"
+      })
+    ).toThrow();
 
     const cancelFollowUp = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
