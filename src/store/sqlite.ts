@@ -63,6 +63,15 @@ interface WorkflowRow {
   updated_at: string;
 }
 
+interface PendingStartRow {
+  workflow_key: string;
+  workspace_path: string;
+  session_alias: string;
+  payload_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export class SqliteStore {
   private readonly filePath: string;
 
@@ -297,6 +306,68 @@ export class SqliteStore {
 
   public async deleteWorkflow(workflowKey: string): Promise<void> {
     await this.mustDb().run(`DELETE FROM delegate_workflows WHERE workflow_key = ?`, [workflowKey]);
+  }
+
+  public async savePendingStart(record: {
+    workflowKey: string;
+    workspacePath: string;
+    sessionAlias: string;
+    payload: Record<string, unknown>;
+    createdAt: string;
+    updatedAt: string;
+  }): Promise<void> {
+    await this.mustDb().run(
+      `INSERT INTO delegate_pending_starts (
+          workflow_key, workspace_path, session_alias, payload_json, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(workflow_key) DO UPDATE SET
+          workspace_path = excluded.workspace_path,
+          session_alias = excluded.session_alias,
+          payload_json = excluded.payload_json,
+          updated_at = excluded.updated_at`,
+      [
+        record.workflowKey,
+        record.workspacePath,
+        record.sessionAlias,
+        JSON.stringify(record.payload),
+        record.createdAt,
+        record.updatedAt
+      ]
+    );
+  }
+
+  public async findPendingStartByKey(workflowKey: string): Promise<
+    | {
+        workflowKey: string;
+        workspacePath: string;
+        sessionAlias: string;
+        payload: Record<string, unknown>;
+        createdAt: string;
+        updatedAt: string;
+      }
+    | undefined
+  > {
+    const row = await this.mustDb().get<PendingStartRow>(
+      `SELECT * FROM delegate_pending_starts
+       WHERE workflow_key = ?
+       LIMIT 1`,
+      [workflowKey]
+    );
+    if (!row) {
+      return undefined;
+    }
+    return {
+      workflowKey: row.workflow_key,
+      workspacePath: row.workspace_path,
+      sessionAlias: row.session_alias,
+      payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  public async deletePendingStart(workflowKey: string): Promise<void> {
+    await this.mustDb().run(`DELETE FROM delegate_pending_starts WHERE workflow_key = ?`, [workflowKey]);
   }
 
   public async appendAudit(record: DelegateAuditRecord): Promise<void> {

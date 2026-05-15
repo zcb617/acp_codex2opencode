@@ -63,6 +63,19 @@ CREATE TABLE IF NOT EXISTS delegate_workflows (
 CREATE INDEX IF NOT EXISTS idx_delegate_workflows_session
 ON delegate_workflows (bridge_session_id);
 
+CREATE TABLE IF NOT EXISTS delegate_pending_starts (
+  workflow_key TEXT PRIMARY KEY,
+  workspace_path TEXT NOT NULL,
+  session_alias TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (workspace_path, session_alias)
+);
+
+CREATE INDEX IF NOT EXISTS idx_delegate_pending_starts_identity
+ON delegate_pending_starts (workspace_path, session_alias);
+
 CREATE TABLE IF NOT EXISTS delegate_audit_logs (
   audit_id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL,

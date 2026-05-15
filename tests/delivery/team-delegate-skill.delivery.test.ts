@@ -60,6 +60,8 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("allow_timeout_default");
     expect(skill).toContain("decision_source=timeout_default");
     expect(skill).toContain("decision_source=user_selected");
+    expect(skill).toContain("主会话先提示用户二选一并停住等待用户输入");
+    expect(skill).toContain("禁止在当前轮用 `Start-Sleep`");
     expect(skill).toContain("用户明确选择");
     expect(skill).toContain("ACP 返回任意新进展");
     expect(skill).toContain("清空该计数");
@@ -81,7 +83,7 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("task_id");
     expect(skill).toContain("同一个 `task_id`");
     expect(skill).toContain("NEEDS_ACP_SESSION_DECISION");
-    expect(skill).toContain("restart_acp_session");
+    expect(skill).toContain("cancel_follow_up");
     expect(skill).toContain("不能静默启动新的 ACP 会话");
   });
 });

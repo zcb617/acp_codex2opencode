@@ -234,6 +234,12 @@ interface TaskWorkflowState {
   nextPollDueAtMs?: number;
   lastProgressAtMs?: number;
   lastProgressAt?: string;
+  userDecisionPromptedAtMs?: number;
+  userDecisionPromptedAt?: string;
+  userDecisionTimeoutAtMs?: number;
+  userDecisionTimeoutAt?: string;
+  lastTimeoutDefaultAutoContinueAtMs?: number;
+  lastTimeoutDefaultAutoContinueAt?: string;
   progressCursorByTurn: Record<string, number>;
   lastProgressUpdate?: WorkflowProgressUpdate;
   phaseGates: {
@@ -813,12 +819,15 @@ export class BridgeService {
 
       const workflow = await this.loadWorkflowState(input.workspace_path, sessionAlias);
       if (action === "status") {
+        await this.ensureWorkflowRuntimeContext(workflow);
         await this.waitForWorkflowFollowUpDue(workflow);
         await this.trackWorkflowStatusPoll(workflow);
+        const timeoutDefaultAutoContinued = this.tryAutoContinueByTimeoutDefault(workflow);
         await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.status", "codex", "OK", {
           sessionAlias,
-          bridgeSessionId: workflow.bridgeSessionId
+          bridgeSessionId: workflow.bridgeSessionId,
+          timeoutDefaultAutoContinued
         });
         return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
       }
@@ -826,26 +835,19 @@ export class BridgeService {
       if (action === "continue_wait") {
         const decisionSource = this.resolveContinueWaitDecisionSource(input);
         this.assertContinueWaitAllowed(workflow, decisionSource);
-        if (workflow.restoredWithoutRunner) {
+        await this.ensureWorkflowRuntimeContext(workflow);
+        if (workflow.stage !== "NEEDS_USER_DECISION") {
           await this.persistWorkflowState(workflow);
           await this.audit(requestId, "task.execute.continue-wait", "codex", "OK", {
             sessionAlias,
             bridgeSessionId: workflow.bridgeSessionId,
-            restoredWithoutRunner: true
+            decisionSource,
+            runtimeDecisionRequired: true,
+            workflowStageAfterRuntimeCheck: workflow.stage
           });
           return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
         }
-        const continuedAtMs = Date.now();
-        workflow.lastProgressAtMs = continuedAtMs;
-        workflow.lastProgressAt = new Date(continuedAtMs).toISOString();
-        workflow.lastProgressUpdate = undefined;
-        if (decisionSource === "timeout_default") {
-          workflow.consecutiveTimeoutDefaultContinueCount += 1;
-        } else {
-          workflow.consecutiveTimeoutDefaultContinueCount = 0;
-        }
-        this.resetWorkflowPollCycle(workflow);
-        workflow.stage = this.resolveRunningStageByPhase(workflow.activePhase);
+        this.applyContinueWaitDecision(workflow, decisionSource);
         await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.continue-wait", "codex", "OK", {
           sessionAlias,
@@ -1110,7 +1112,7 @@ export class BridgeService {
       );
     }
 
-    this.cachePendingStartInput(workflowKey, input);
+    await this.cachePendingStartInput(workflowKey, input, sessionAlias, taskId);
     const modelGate = await this.resolveModelGate(input.workspace_path);
     if (modelGate.savedModel && modelGate.savedModelAvailable) {
       await this.audit(requestId, "task.execute.start.needs-model-confirm", "codex", "OK", {
@@ -1164,7 +1166,7 @@ export class BridgeService {
     if (!choice) {
       throw new BridgeError(ErrorCodes.INVALID_REQUEST, "model_confirm 需要 model_confirm_choice", false);
     }
-    const effectiveInput = this.resolveEffectiveStartInput(workflowKey, input);
+    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input);
     const startDecision = this.resolveStartPhaseDecision(effectiveInput);
     const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
     const modelGate = await this.resolveModelGate(input.workspace_path);
@@ -1224,7 +1226,7 @@ export class BridgeService {
     if (!selectedModel) {
       throw new BridgeError(ErrorCodes.INVALID_REQUEST, "model_select 需要 selected_model", false);
     }
-    const effectiveInput = this.resolveEffectiveStartInput(workflowKey, input);
+    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input);
     const startDecision = this.resolveStartPhaseDecision(effectiveInput);
     const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
     const modelGate = await this.resolveModelGate(effectiveInput.workspace_path);
@@ -1266,7 +1268,7 @@ export class BridgeService {
     const startDecision = this.resolveStartPhaseDecision(input);
     const developmentDecision = this.resolveDevelopmentTypeDecision(input);
     if (startDecision.phase === "need_user_input" || developmentDecision.type === "need_user_input") {
-      this.clearPendingStartInput(workflowKey);
+      await this.clearPendingStartInput(workflowKey);
       await this.audit(requestId, "task.execute.start.needs-user-input", "codex", "OK", {
         sessionAlias,
         missingContext: [...startDecision.missingContext, ...developmentDecision.missingContext],
@@ -1282,7 +1284,7 @@ export class BridgeService {
       designPlanningExecutor === "main" &&
       (startDecision.phase === "design" || startDecision.phase === "planning")
     ) {
-      this.clearPendingStartInput(workflowKey);
+      await this.clearPendingStartInput(workflowKey);
       await this.audit(requestId, "task.execute.start.needs-main-executor", "codex", "OK", {
         sessionAlias,
         detectedStartPhase: startDecision.phase,
@@ -1317,7 +1319,7 @@ export class BridgeService {
       developmentDecision.evidence
     );
     this.workflowByKey.set(workflowKey, workflow);
-    this.clearPendingStartInput(workflowKey);
+    await this.clearPendingStartInput(workflowKey);
     await this.persistWorkflowState(workflow);
     this.launchWorkflowByEntryPhase(workflow);
     await this.waitForWorkflowShortSyncWindow(workflow);
@@ -1350,19 +1352,70 @@ export class BridgeService {
     };
   }
 
-  private cachePendingStartInput(workflowKey: string, input: ExecuteTaskInput): void {
-    this.pendingStartInputByKey.set(workflowKey, {
+  private async cachePendingStartInput(
+    workflowKey: string,
+    input: ExecuteTaskInput,
+    sessionAlias: string,
+    taskId: string
+  ): Promise<void> {
+    const pendingInput: ExecuteTaskInput = {
       ...input,
+      session_alias: sessionAlias,
+      task_id: taskId,
       action: "start"
+    };
+    this.pendingStartInputByKey.set(workflowKey, {
+      ...pendingInput
     });
+    try {
+      await this.store.savePendingStart({
+        workflowKey,
+        workspacePath: input.workspace_path,
+        sessionAlias,
+        payload: pendingInput as unknown as Record<string, unknown>,
+        createdAt: now(),
+        updatedAt: now()
+      });
+    } catch (error) {
+      this.pendingStartInputByKey.delete(workflowKey);
+      throw new BridgeError(
+        ErrorCodes.STORE_WRITE_FAILED,
+        `保存模型确认上下文失败：${error instanceof Error ? error.message : String(error)}`,
+        true
+      );
+    }
   }
 
-  private clearPendingStartInput(workflowKey: string): void {
+  private async clearPendingStartInput(workflowKey: string): Promise<void> {
     this.pendingStartInputByKey.delete(workflowKey);
+    try {
+      await this.store.deletePendingStart(workflowKey);
+    } catch (error) {
+      this.logger.warn("workflow.pending_start.clear_failed", {
+        workflowKey,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
-  private resolveEffectiveStartInput(workflowKey: string, input: ExecuteTaskInput): ExecuteTaskInput {
-    const pending = this.pendingStartInputByKey.get(workflowKey);
+  private async resolveEffectiveStartInput(workflowKey: string, input: ExecuteTaskInput): Promise<ExecuteTaskInput> {
+    let pending = this.pendingStartInputByKey.get(workflowKey);
+    if (!pending) {
+      try {
+        const persisted = await this.store.findPendingStartByKey(workflowKey);
+        const payload = persisted?.payload;
+        if (payload && typeof payload === "object") {
+          pending = payload as unknown as ExecuteTaskInput;
+          this.pendingStartInputByKey.set(workflowKey, pending);
+        }
+      } catch (error) {
+        throw new BridgeError(
+          ErrorCodes.STORE_WRITE_FAILED,
+          `读取模型确认上下文失败：${error instanceof Error ? error.message : String(error)}`,
+          true
+        );
+      }
+    }
     if (!pending) {
       return input;
     }
@@ -1813,7 +1866,71 @@ export class BridgeService {
   }
 
   private toWorkflowKey(workspacePath: string, sessionAlias: string): string {
-    return `${workspacePath}::${sessionAlias}`;
+    return `${this.normalizeWorkflowWorkspacePath(workspacePath)}::${sessionAlias}`;
+  }
+
+  private normalizeWorkflowWorkspacePath(workspacePath: string): string {
+    return this.normalizeWorkspaceKey(workspacePath);
+  }
+
+  private isSameWorkflowWorkspacePath(left: string, right: string): boolean {
+    return this.normalizeWorkflowWorkspacePath(left) === this.normalizeWorkflowWorkspacePath(right);
+  }
+
+  private findWorkflowInMemoryByIdentity(
+    workspacePath: string,
+    sessionAlias: string
+  ): { workflowKey: string; workflow: TaskWorkflowState } | undefined {
+    for (const [workflowKey, workflow] of this.workflowByKey.entries()) {
+      if (workflow.sessionAlias !== sessionAlias) {
+        continue;
+      }
+      if (!this.isSameWorkflowWorkspacePath(workflow.workspacePath, workspacePath)) {
+        continue;
+      }
+      return { workflowKey, workflow };
+    }
+    return undefined;
+  }
+
+  private async findPersistedWorkflowByIdentity(
+    workspacePath: string,
+    sessionAlias: string
+  ): Promise<DelegateWorkflowRecord | undefined> {
+    let records: DelegateWorkflowRecord[];
+    try {
+      records = await this.store.listWorkflows();
+    } catch (error) {
+      this.logger.warn("workflow.persisted_lookup_by_identity_failed", {
+        workspacePath,
+        sessionAlias,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return undefined;
+    }
+    return records.find((item) => {
+      return item.sessionAlias === sessionAlias && this.isSameWorkflowWorkspacePath(item.workspacePath, workspacePath);
+    });
+  }
+
+  private async migrateWorkflowKeyIfNeeded(
+    workflow: TaskWorkflowState,
+    previousWorkflowKey: string,
+    expectedWorkflowKey: string
+  ): Promise<void> {
+    if (previousWorkflowKey === expectedWorkflowKey) {
+      return;
+    }
+    try {
+      await this.persistWorkflowState(workflow);
+      await this.store.deleteWorkflow(previousWorkflowKey);
+    } catch (error) {
+      this.logger.warn("workflow.key_migration_failed", {
+        previousWorkflowKey,
+        expectedWorkflowKey,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private async loadWorkflowState(workspacePath: string, sessionAlias: string): Promise<TaskWorkflowState> {
@@ -1823,10 +1940,28 @@ export class BridgeService {
       return state;
     }
 
-    const record = await this.findPersistedWorkflow(key);
+    const memoryMatched = this.findWorkflowInMemoryByIdentity(workspacePath, sessionAlias);
+    if (memoryMatched) {
+      if (memoryMatched.workflowKey !== key) {
+        this.workflowByKey.delete(memoryMatched.workflowKey);
+        await this.clearPendingStartInput(memoryMatched.workflowKey);
+        this.workflowByKey.set(key, memoryMatched.workflow);
+      }
+      return memoryMatched.workflow;
+    }
+
+    let record = await this.findPersistedWorkflow(key);
+    if (!record) {
+      record = await this.findPersistedWorkflowByIdentity(workspacePath, sessionAlias);
+    }
     if (record) {
       const restored = this.restoreWorkflowState(record);
       this.workflowByKey.set(key, restored);
+      if (record.workflowKey !== key) {
+        this.workflowByKey.delete(record.workflowKey);
+        await this.clearPendingStartInput(record.workflowKey);
+        await this.migrateWorkflowKeyIfNeeded(restored, record.workflowKey, key);
+      }
       return restored;
     }
 
@@ -1853,11 +1988,20 @@ export class BridgeService {
     workspacePath: string,
     taskId: string
   ): Promise<TaskWorkflowState | undefined> {
+    const normalizedWorkspacePath = this.normalizeWorkflowWorkspacePath(workspacePath);
     for (const [workflowKey, workflow] of this.workflowByKey.entries()) {
-      if (workflow.workspacePath === workspacePath && workflow.taskId === taskId) {
-        this.workflowByKey.set(workflowKey, workflow);
-        return workflow;
+      if (this.normalizeWorkflowWorkspacePath(workflow.workspacePath) !== normalizedWorkspacePath || workflow.taskId !== taskId) {
+        continue;
       }
+      const expectedWorkflowKey = this.toWorkflowKey(workflow.workspacePath, workflow.sessionAlias);
+      if (workflowKey !== expectedWorkflowKey) {
+        this.workflowByKey.delete(workflowKey);
+        await this.clearPendingStartInput(workflowKey);
+        this.workflowByKey.set(expectedWorkflowKey, workflow);
+      } else {
+        this.workflowByKey.set(workflowKey, workflow);
+      }
+      return workflow;
     }
 
     let records: DelegateWorkflowRecord[];
@@ -1867,7 +2011,7 @@ export class BridgeService {
       return undefined;
     }
     const record = records.find((item) => {
-      if (item.workspacePath !== workspacePath) {
+      if (this.normalizeWorkflowWorkspacePath(item.workspacePath) !== normalizedWorkspacePath) {
         return false;
       }
       const recordTaskId = this.readString(item.snapshot.taskId) ?? item.sessionAlias;
@@ -1878,11 +2022,18 @@ export class BridgeService {
     }
 
     const restored = this.restoreWorkflowState(record);
-    this.workflowByKey.set(record.workflowKey, restored);
+    const expectedWorkflowKey = this.toWorkflowKey(restored.workspacePath, restored.sessionAlias);
+    this.workflowByKey.set(expectedWorkflowKey, restored);
+    if (record.workflowKey !== expectedWorkflowKey) {
+      this.workflowByKey.delete(record.workflowKey);
+      await this.clearPendingStartInput(record.workflowKey);
+      await this.migrateWorkflowKeyIfNeeded(restored, record.workflowKey, expectedWorkflowKey);
+    }
     return restored;
   }
 
   private async cleanupExpiredOtherTaskWorkflows(workspacePath: string, currentTaskId: string): Promise<void> {
+    const normalizedWorkspacePath = this.normalizeWorkflowWorkspacePath(workspacePath);
     let records: DelegateWorkflowRecord[];
     try {
       records = await this.store.listWorkflows();
@@ -1895,7 +2046,7 @@ export class BridgeService {
     }
     const expiredBeforeMs = Date.now() - TASK_ACP_KEEPALIVE_CLEANUP_MS;
     for (const record of records) {
-      if (record.workspacePath !== workspacePath) {
+      if (this.normalizeWorkflowWorkspacePath(record.workspacePath) !== normalizedWorkspacePath) {
         continue;
       }
       const recordTaskId = this.readString(record.snapshot.taskId) ?? record.sessionAlias;
@@ -1924,8 +2075,11 @@ export class BridgeService {
       }
 
       await this.store.deleteWorkflow(record.workflowKey);
+      const expectedWorkflowKey = this.toWorkflowKey(record.workspacePath, record.sessionAlias);
       this.workflowByKey.delete(record.workflowKey);
-      this.pendingStartInputByKey.delete(record.workflowKey);
+      await this.clearPendingStartInput(record.workflowKey);
+      this.workflowByKey.delete(expectedWorkflowKey);
+      await this.clearPendingStartInput(expectedWorkflowKey);
     }
   }
 
@@ -2001,6 +2155,12 @@ export class BridgeService {
       nextPollDueAtMs: workflow.nextPollDueAtMs,
       lastProgressAtMs: workflow.lastProgressAtMs,
       lastProgressAt: workflow.lastProgressAt,
+      userDecisionPromptedAtMs: workflow.userDecisionPromptedAtMs,
+      userDecisionPromptedAt: workflow.userDecisionPromptedAt,
+      userDecisionTimeoutAtMs: workflow.userDecisionTimeoutAtMs,
+      userDecisionTimeoutAt: workflow.userDecisionTimeoutAt,
+      lastTimeoutDefaultAutoContinueAtMs: workflow.lastTimeoutDefaultAutoContinueAtMs,
+      lastTimeoutDefaultAutoContinueAt: workflow.lastTimeoutDefaultAutoContinueAt,
       progressCursorByTurn: workflow.progressCursorByTurn,
       lastProgressUpdate: workflow.lastProgressUpdate,
       phaseGates: workflow.phaseGates,
@@ -2013,7 +2173,7 @@ export class BridgeService {
     const snapshot = record.snapshot;
     const savedStage = this.readWorkflowStage(snapshot.stage) ?? this.readWorkflowStage(record.stage) ?? "FAILED";
     const restoredWithoutRunner = this.isRunningStage(savedStage);
-    const stage = restoredWithoutRunner ? "NEEDS_USER_DECISION" : savedStage;
+    const stage = savedStage;
 
     return {
       workflowId: this.readString(snapshot.workflowId) ?? `${Date.now()}`,
@@ -2059,6 +2219,12 @@ export class BridgeService {
       nextPollDueAtMs: this.readNumber(snapshot.nextPollDueAtMs),
       lastProgressAtMs: this.readNumber(snapshot.lastProgressAtMs),
       lastProgressAt: this.readString(snapshot.lastProgressAt),
+      userDecisionPromptedAtMs: this.readNumber(snapshot.userDecisionPromptedAtMs),
+      userDecisionPromptedAt: this.readString(snapshot.userDecisionPromptedAt),
+      userDecisionTimeoutAtMs: this.readNumber(snapshot.userDecisionTimeoutAtMs),
+      userDecisionTimeoutAt: this.readString(snapshot.userDecisionTimeoutAt),
+      lastTimeoutDefaultAutoContinueAtMs: this.readNumber(snapshot.lastTimeoutDefaultAutoContinueAtMs),
+      lastTimeoutDefaultAutoContinueAt: this.readString(snapshot.lastTimeoutDefaultAutoContinueAt),
       progressCursorByTurn: this.readNumberRecord(snapshot.progressCursorByTurn),
       lastProgressUpdate: this.readProgressUpdate(snapshot.lastProgressUpdate),
       phaseGates: this.readPhaseGates(snapshot.phaseGates),
@@ -2220,8 +2386,165 @@ export class BridgeService {
     });
   }
 
-  private restoredWorkflowCannotStream(workflow: TaskWorkflowState): boolean {
-    return Boolean(workflow.restoredWithoutRunner && !workflow.pendingTask);
+  private workflowHasActiveRuntime(workflow: TaskWorkflowState): boolean {
+    return Boolean(workflow.pendingTask || this.activeTurnByBridgeSession.get(workflow.bridgeSessionId));
+  }
+
+  private async rebindWorkflowActiveTurnFromStore(workflow: TaskWorkflowState): Promise<boolean> {
+    const session = await this.store.findSessionById(workflow.bridgeSessionId);
+    if (!session) {
+      return false;
+    }
+
+    let turnId = session.activeTurnId;
+    if (!turnId && session.status === "ACTIVE") {
+      const turns = await this.store.listTurns(session.bridgeSessionId);
+      const runningTurn = turns.filter((turn) => turn.status === "RUNNING").at(-1);
+      if (runningTurn) {
+        turnId = runningTurn.turnId;
+        session.activeTurnId = turnId;
+        session.updatedAt = now();
+        await this.store.saveSession(session);
+      }
+    }
+
+    if (!turnId) {
+      return false;
+    }
+
+    this.activeTurnByBridgeSession.set(workflow.bridgeSessionId, turnId);
+    if (!this.eventSeqByTurn.has(turnId)) {
+      const events = await this.store.listEvents(turnId);
+      const latestEventSeq = events[events.length - 1]?.eventSeq ?? 0;
+      this.eventSeqByTurn.set(turnId, latestEventSeq);
+    }
+    return true;
+  }
+
+  private async probeWorkflowAcpEndpoint(workflow: TaskWorkflowState): Promise<{
+    ok: true;
+  } | {
+    ok: false;
+    error: { code: string; message: string; retryable: boolean };
+  }> {
+    try {
+      await this.ensureAcpReady(workflow.timeoutMs ?? 15_000);
+    } catch (error) {
+      const bridgeError = this.normalizeError(error, ErrorCodes.ACP_PROCESS_UNAVAILABLE);
+      return {
+        ok: false,
+        error: {
+          code: bridgeError.code,
+          message: bridgeError.message,
+          retryable: bridgeError.retryable
+        }
+      };
+    }
+
+    const session = await this.store.findSessionById(workflow.bridgeSessionId);
+    if (!session) {
+      return {
+        ok: false,
+        error: {
+          code: ErrorCodes.SESSION_NOT_FOUND,
+          message: "未找到对应的 ACP 会话记录",
+          retryable: false
+        }
+      };
+    }
+
+    const timeoutMs = workflow.timeoutMs ?? 15_000;
+    try {
+      const resumed = await this.mustApi().resumeSession(session.acpSessionId, workflow.workspacePath, timeoutMs);
+      session.acpSessionId = resumed.sessionId;
+      if (resumed.configOptions && resumed.configOptions.length > 0) {
+        session.configOptions = resumed.configOptions;
+        session.currentModel = resumed.configOptions.find((item) => item.id === "model")?.currentValue;
+      }
+      session.processPid = this.processSupervisor.getPid();
+      session.updatedAt = now();
+      await this.store.saveSession(session);
+      return { ok: true };
+    } catch {
+      try {
+        const loaded = await this.mustApi().loadSession(
+          session.acpSessionId,
+          workflow.workspacePath,
+          this.runtime.mcpServers ?? [],
+          timeoutMs
+        );
+        session.acpSessionId = loaded.sessionId;
+        if (loaded.configOptions && loaded.configOptions.length > 0) {
+          session.configOptions = loaded.configOptions;
+          session.currentModel = loaded.configOptions.find((item) => item.id === "model")?.currentValue;
+        }
+        session.processPid = this.processSupervisor.getPid();
+        session.updatedAt = now();
+        await this.store.saveSession(session);
+        return { ok: true };
+      } catch (error) {
+        const bridgeError = this.normalizeError(error, ErrorCodes.SESSION_NOT_READY);
+        return {
+          ok: false,
+          error: {
+            code: ErrorCodes.SESSION_NOT_READY,
+            message: `ACP 执行端不可用或已结束: ${bridgeError.message}`,
+            retryable: false
+          }
+        };
+      }
+    }
+  }
+
+  private markWorkflowNeedsAcpSessionDecision(
+    workflow: TaskWorkflowState,
+    error: { code: string; message: string; retryable: boolean }
+  ): void {
+    workflow.stage = "NEEDS_ACP_SESSION_DECISION";
+    workflow.activePhase = undefined;
+    workflow.activePhaseStartedAt = undefined;
+    workflow.pendingTask = undefined;
+    workflow.lastCompletedAt = now();
+    workflow.lastError = error;
+    workflow.lastProgressUpdate = {
+      hasNewOutput: false,
+      text: "检测到 ACP 执行端已结束或不可用，需选择主会话接手或终止流程。",
+      eventCount: 0,
+      observedAt: now()
+    };
+    this.clearUserDecisionWindow(workflow);
+    this.activeTurnByBridgeSession.delete(workflow.bridgeSessionId);
+  }
+
+  private async ensureWorkflowRuntimeContext(workflow: TaskWorkflowState): Promise<void> {
+    if (!this.isRunningStage(workflow.stage)) {
+      return;
+    }
+
+    if (this.workflowHasActiveRuntime(workflow)) {
+      workflow.restoredWithoutRunner = false;
+      workflow.lastError = undefined;
+      return;
+    }
+
+    const reboundFromStore = await this.rebindWorkflowActiveTurnFromStore(workflow);
+    if (reboundFromStore) {
+      workflow.restoredWithoutRunner = false;
+      workflow.lastError = undefined;
+      return;
+    }
+
+    const endpointProbe = await this.probeWorkflowAcpEndpoint(workflow);
+    if (!endpointProbe.ok) {
+      this.markWorkflowNeedsAcpSessionDecision(workflow, endpointProbe.error);
+      return;
+    }
+
+    const reboundAfterProbe = await this.rebindWorkflowActiveTurnFromStore(workflow);
+    workflow.restoredWithoutRunner = !reboundAfterProbe;
+    if (reboundAfterProbe) {
+      workflow.lastError = undefined;
+    }
   }
 
   private async restoreExistingWorkflowForStart(workflowKey: string): Promise<TaskWorkflowState | undefined> {
@@ -2250,24 +2573,6 @@ export class BridgeService {
       stage === "TRANSFERRED_TO_MAIN" ||
       stage === "CANCELLED"
     );
-  }
-
-  private buildRestoredWorkflowDecisionResponse(workflow: TaskWorkflowState): Record<string, unknown> {
-    return {
-      ...this.buildWorkflowBasePayload(workflow),
-      current_stage: "NEEDS_USER_DECISION",
-      workflow_status: "NEEDS_USER_DECISION",
-      business_stage: "委派恢复决策",
-      user_message: "当前委派执行端无法继续回传进展，后续需要由主会话接手处理。",
-      next_business_action: "选择主会话接手，继续完成后续整改、交付测试或收尾工作",
-      next_action_required: ["handoff_to_main"],
-      user_options: [
-        {
-          action: "handoff_to_main",
-          description: "主会话接手：停止依赖已中断的委派执行端，由主会话继续处理后续工作"
-        }
-      ]
-    };
   }
 
   private assertWorkflowStage(
@@ -2355,6 +2660,10 @@ export class BridgeService {
     workflow.lastProgressAtMs = startedAtMs;
     workflow.lastProgressAt = startedAt;
     workflow.lastProgressUpdate = undefined;
+    workflow.userDecisionPromptedAtMs = undefined;
+    workflow.userDecisionPromptedAt = undefined;
+    workflow.userDecisionTimeoutAtMs = undefined;
+    workflow.userDecisionTimeoutAt = undefined;
     workflow.progressCursorByTurn = {};
     this.resetWorkflowPollCycle(workflow);
     this.persistWorkflowStateSoon(workflow);
@@ -2400,7 +2709,7 @@ export class BridgeService {
 
   private async waitForWorkflowFollowUpDue(workflow: TaskWorkflowState): Promise<void> {
     const dueAtMs = workflow.nextPollDueAtMs;
-    if (dueAtMs === undefined || !workflow.pendingTask || !this.isFollowUpGatedStage(workflow.stage)) {
+    if (dueAtMs === undefined || !this.workflowHasActiveRuntime(workflow) || !this.isFollowUpGatedStage(workflow.stage)) {
       return;
     }
 
@@ -2414,7 +2723,7 @@ export class BridgeService {
   }
 
   private shouldWaitForWorkflowFollowUpDue(workflow: TaskWorkflowState, dueAtMs: number): boolean {
-    return Boolean(workflow.pendingTask) && this.isFollowUpGatedStage(workflow.stage) && Date.now() < dueAtMs;
+    return this.workflowHasActiveRuntime(workflow) && this.isFollowUpGatedStage(workflow.stage) && Date.now() < dueAtMs;
   }
 
   public async detectWorkflowEntry(
@@ -2748,18 +3057,7 @@ export class BridgeService {
   }
 
   private async trackWorkflowStatusPoll(workflow: TaskWorkflowState): Promise<void> {
-    if (this.restoredWorkflowCannotStream(workflow)) {
-      workflow.stage = "NEEDS_USER_DECISION";
-      workflow.lastProgressUpdate = {
-        hasNewOutput: false,
-        text: "当前委派执行端无法继续回传进展。",
-        eventCount: 0,
-        observedAt: now()
-      };
-      return;
-    }
-
-    if (!workflow.pendingTask || !this.isRunningStage(workflow.stage)) {
+    if (!this.isRunningStage(workflow.stage)) {
       workflow.lastProgressUpdate = undefined;
       return;
     }
@@ -2777,6 +3075,7 @@ export class BridgeService {
       workflow.currentPollCount = 0;
       workflow.consecutiveTimeoutDefaultContinueCount = 0;
       workflow.stage = this.resolveRunningStageByPhase(workflow.activePhase);
+      this.clearUserDecisionWindow(workflow);
       this.scheduleNextWorkflowPoll(workflow, nowMs, true);
       return;
     }
@@ -2792,6 +3091,9 @@ export class BridgeService {
     const silenceMs = nowMs - silenceStartedAtMs;
     if (silenceMs >= workflow.silenceDecisionMs) {
       workflow.stage = "NEEDS_USER_DECISION";
+      this.ensureUserDecisionWindow(workflow, nowMs);
+    } else if (workflow.stage !== "NEEDS_USER_DECISION") {
+      this.clearUserDecisionWindow(workflow);
     }
     this.scheduleNextWorkflowPoll(workflow, nowMs, false);
   }
@@ -2870,10 +3172,67 @@ export class BridgeService {
     return input.decision_source === "timeout_default" ? "timeout_default" : "user_selected";
   }
 
+  private ensureUserDecisionWindow(workflow: TaskWorkflowState, nowMs: number = Date.now()): void {
+    if (!this.canUseTimeoutDefaultContinue(workflow)) {
+      workflow.userDecisionTimeoutAtMs = undefined;
+      workflow.userDecisionTimeoutAt = undefined;
+      return;
+    }
+    if (workflow.userDecisionPromptedAtMs === undefined) {
+      workflow.userDecisionPromptedAtMs = nowMs;
+      workflow.userDecisionPromptedAt = new Date(nowMs).toISOString();
+    }
+    if (workflow.userDecisionTimeoutAtMs === undefined) {
+      const timeoutAtMs = workflow.userDecisionPromptedAtMs + DEFAULT_USER_DECISION_TIMEOUT_DEFAULT_AFTER_MS;
+      workflow.userDecisionTimeoutAtMs = timeoutAtMs;
+      workflow.userDecisionTimeoutAt = new Date(timeoutAtMs).toISOString();
+    }
+  }
+
+  private clearUserDecisionWindow(workflow: TaskWorkflowState): void {
+    workflow.userDecisionPromptedAtMs = undefined;
+    workflow.userDecisionPromptedAt = undefined;
+    workflow.userDecisionTimeoutAtMs = undefined;
+    workflow.userDecisionTimeoutAt = undefined;
+  }
+
+  private applyContinueWaitDecision(
+    workflow: TaskWorkflowState,
+    decisionSource: ContinueWaitDecisionSource
+  ): void {
+    const continuedAtMs = Date.now();
+    workflow.lastProgressAtMs = continuedAtMs;
+    workflow.lastProgressAt = new Date(continuedAtMs).toISOString();
+    workflow.lastProgressUpdate = undefined;
+    if (decisionSource === "timeout_default") {
+      workflow.consecutiveTimeoutDefaultContinueCount += 1;
+      workflow.lastTimeoutDefaultAutoContinueAtMs = continuedAtMs;
+      workflow.lastTimeoutDefaultAutoContinueAt = workflow.lastProgressAt;
+    } else {
+      workflow.consecutiveTimeoutDefaultContinueCount = 0;
+    }
+    this.clearUserDecisionWindow(workflow);
+    this.resetWorkflowPollCycle(workflow);
+    workflow.stage = this.resolveRunningStageByPhase(workflow.activePhase);
+  }
+
+  private tryAutoContinueByTimeoutDefault(workflow: TaskWorkflowState): boolean {
+    if (!this.canUseTimeoutDefaultContinue(workflow)) {
+      return false;
+    }
+    this.ensureUserDecisionWindow(workflow);
+    const timeoutAtMs = workflow.userDecisionTimeoutAtMs;
+    if (timeoutAtMs === undefined || Date.now() < timeoutAtMs) {
+      return false;
+    }
+    this.assertContinueWaitAllowed(workflow, "timeout_default");
+    this.applyContinueWaitDecision(workflow, "timeout_default");
+    return true;
+  }
+
   private canUseTimeoutDefaultContinue(workflow: TaskWorkflowState): boolean {
     return (
       workflow.stage === "NEEDS_USER_DECISION" &&
-      !this.restoredWorkflowCannotStream(workflow) &&
       workflow.consecutiveTimeoutDefaultContinueCount < MAX_CONSECUTIVE_TIMEOUT_DEFAULT_CONTINUES
     );
   }
@@ -2882,17 +3241,7 @@ export class BridgeService {
     workflow: TaskWorkflowState,
     decisionSource: ContinueWaitDecisionSource
   ): void {
-    if (workflow.stage === "NEEDS_USER_DECISION" && this.restoredWorkflowCannotStream(workflow)) {
-      if (decisionSource === "timeout_default") {
-        throw new BridgeError(
-          ErrorCodes.WORKFLOW_INVALID_TRANSITION,
-          "当前委派执行端无法继续回传进展，不能使用超时默认继续，必须由用户明确选择后续动作",
-          false
-        );
-      }
-      return;
-    }
-    if (!workflow.pendingTask || workflow.stage !== "NEEDS_USER_DECISION") {
+    if (workflow.stage !== "NEEDS_USER_DECISION") {
       throw new BridgeError(
         ErrorCodes.WORKFLOW_INVALID_TRANSITION,
         "当前无需 continue_wait，只有在 NEEDS_USER_DECISION 且任务仍在运行时才可继续等待",
@@ -3125,7 +3474,7 @@ export class BridgeService {
     workflow: TaskWorkflowState,
     timeoutMs?: number
   ): Promise<Record<string, unknown>> {
-    this.assertWorkflowStage(workflow, ["NEEDS_REMEDIATION_DECISION"], "cancel_follow_up");
+    this.assertWorkflowStage(workflow, ["NEEDS_REMEDIATION_DECISION", "NEEDS_ACP_SESSION_DECISION"], "cancel_follow_up");
     const closed = await this.closeWorkflowSessionIfNeeded(workflow, timeoutMs, "取消后续工作时关闭 ACP 会话失败");
     workflow.stage = "CANCELLED";
     workflow.lastCompletedAt = now();
@@ -3317,6 +3666,12 @@ export class BridgeService {
       currentPollCount: 0,
       currentPollCycle: 0,
       consecutiveTimeoutDefaultContinueCount: 0,
+      userDecisionPromptedAtMs: undefined,
+      userDecisionPromptedAt: undefined,
+      userDecisionTimeoutAtMs: undefined,
+      userDecisionTimeoutAt: undefined,
+      lastTimeoutDefaultAutoContinueAtMs: undefined,
+      lastTimeoutDefaultAutoContinueAt: undefined,
       progressCursorByTurn: {}
     };
 
@@ -3552,6 +3907,7 @@ export class BridgeService {
         current_poll_count: workflow.currentPollCount,
         current_poll_cycle: workflow.currentPollCycle,
         consecutive_timeout_defaults: workflow.consecutiveTimeoutDefaultContinueCount,
+        last_timeout_default_auto_continue_at: workflow.lastTimeoutDefaultAutoContinueAt,
         next_poll_due_at: nextFollowUpAt
       },
       follow_up_policy: followUpPolicy,
@@ -3566,18 +3922,33 @@ export class BridgeService {
   private buildUserDecisionPolicy(workflow: TaskWorkflowState): Record<string, unknown> {
     const allowTimeoutDefault = this.canUseTimeoutDefaultContinue(workflow);
     const waitingForDecision = workflow.stage === "NEEDS_USER_DECISION";
+    if (waitingForDecision && allowTimeoutDefault) {
+      this.ensureUserDecisionWindow(workflow);
+    }
+    const timeoutDeadlineAt =
+      waitingForDecision && allowTimeoutDefault
+        ? workflow.userDecisionTimeoutAt ?? new Date(workflow.userDecisionTimeoutAtMs ?? Date.now()).toISOString()
+        : null;
+    const timeoutRemainingSeconds =
+      waitingForDecision && allowTimeoutDefault && workflow.userDecisionTimeoutAtMs !== undefined
+        ? Math.max(0, Math.ceil((workflow.userDecisionTimeoutAtMs - Date.now()) / 1000))
+        : null;
     return {
       decision_prompt_required: waitingForDecision,
       allow_timeout_default: allowTimeoutDefault,
       default_action: allowTimeoutDefault ? "continue_wait" : null,
       timeout_default_after_seconds: Math.floor(DEFAULT_USER_DECISION_TIMEOUT_DEFAULT_AFTER_MS / 1000),
+      timeout_default_deadline_at: timeoutDeadlineAt,
+      timeout_default_remaining_seconds: timeoutRemainingSeconds,
+      decision_prompted_at: workflow.userDecisionPromptedAt ?? null,
       consecutive_timeout_defaults: workflow.consecutiveTimeoutDefaultContinueCount,
       consecutive_timeout_default_limit: MAX_CONSECUTIVE_TIMEOUT_DEFAULT_CONTINUES,
       requires_explicit_user_decision: waitingForDecision && !allowTimeoutDefault,
       timeout_default_decision_source: "timeout_default",
       user_selected_decision_source: "user_selected",
+      last_timeout_default_auto_continue_at: workflow.lastTimeoutDefaultAutoContinueAt ?? null,
       guidance:
-        "每次无进展决策都必须先提示用户；允许默认继续时，用户在倒计时内无响应才可用 timeout_default 调用 continue_wait。用户明确选择或 ACP 返回新进展会清空连续无人响应计数。"
+        "每次无进展决策都必须先提示用户并停住等待选择；允许默认继续时，由后续跟进周期在超时后触发 timeout_default 继续等待。用户明确选择或 ACP 返回新进展会清空连续无人响应计数。"
     };
   }
 
@@ -3666,17 +4037,17 @@ export class BridgeService {
         workflow_status: "NEEDS_ACP_SESSION_DECISION",
         business_stage: "执行会话恢复决策",
         user_message:
-          "当前任务对应的 ACP 会话无法恢复，插件不能静默更换执行上下文。现在必须由用户决定：主会话接手继续，或启动新的 ACP 会话继续当前任务。",
-        next_business_action: "等待用户选择主会话接手，或启动新的 ACP 会话继续当前任务",
-        next_action_required: ["handoff_to_main", "restart_acp_session"],
+          "检测到 ACP 执行端已结束或不可用。现在必须由用户决定：主会话接手继续，或终止当前流程。",
+        next_business_action: "等待用户选择主会话接手，或终止当前流程",
+        next_action_required: ["handoff_to_main", "cancel_follow_up"],
         user_options: [
           {
             action: "handoff_to_main",
             description: "主会话接手：停止依赖原 ACP 会话，由主会话继续处理当前任务"
           },
           {
-            action: "restart_acp_session",
-            description: "启动新的 ACP 会话：保留当前任务、失败材料和整改方案，重新创建 ACP 会话继续实施"
+            action: "cancel_follow_up",
+            description: "终止流程：结束当前任务，不再继续后续实施与跟进"
           }
         ]
       };
@@ -3703,9 +4074,6 @@ export class BridgeService {
       };
     }
     if (workflow.stage === "NEEDS_USER_DECISION") {
-      if (this.restoredWorkflowCannotStream(workflow)) {
-        return this.buildRestoredWorkflowDecisionResponse(workflow);
-      }
       const userDecisionPolicy = this.buildUserDecisionPolicy(workflow);
       const allowTimeoutDefault = userDecisionPolicy.allow_timeout_default === true;
       return {
@@ -3713,10 +4081,10 @@ export class BridgeService {
         current_stage: "NEEDS_USER_DECISION",
         business_stage: "等待用户决策",
         user_message: allowTimeoutDefault
-          ? "当前超过约定时间仍无新进展。现在必须进行一次用户决策：继续等待或主会话接手。60 秒内没有用户选择时，主会话必须按超时默认规则继续等待。"
+          ? "当前超过约定时间仍无新进展。现在需要你选择继续等待或主会话接手。我会先停住等待你的选择；若 60 秒内没有收到选择，系统会在后续跟进周期按默认规则继续等待。"
           : "当前已经连续 3 次无人响应后默认继续等待。现在必须由用户明确选择继续等待或主会话接手；主会话不得再使用超时默认继续。",
         next_business_action: allowTimeoutDefault
-          ? "立即提示用户选择，并启动 60 秒倒计时；倒计时结束仍无选择时，必须用 decision_source=timeout_default 继续等待"
+          ? "先停住等待用户选择；若超时仍无选择，后续 status 跟进会自动按 decision_source=timeout_default 继续等待"
           : "停住并等待用户明确选择；禁止继续使用超时默认动作",
         next_action_required: ["continue_wait", "handoff_to_main"],
         user_options: [
@@ -3735,7 +4103,8 @@ export class BridgeService {
               action: "continue_wait",
               decision_source: "timeout_default",
               after_seconds: Math.floor(DEFAULT_USER_DECISION_TIMEOUT_DEFAULT_AFTER_MS / 1000),
-              description: "倒计时结束仍无用户选择时，主会话必须按该动作继续等待"
+              deadline_at: (userDecisionPolicy.timeout_default_deadline_at as string | null | undefined) ?? null,
+              description: "如果超时仍无用户选择，插件会在后续跟进周期自动按该动作继续等待"
             }
           : null
       };

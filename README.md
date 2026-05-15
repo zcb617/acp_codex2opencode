@@ -57,6 +57,12 @@
 - `follow_up_policy`：当前持续跟进节奏（60-120 秒范围、5 分钟无新进展决策条件、下一次持续跟进时间）
 - `progress_update`：ACP 新输出增量；主会话应将其总结成简短中文进展，不直接粘贴完整原始过程
 
+`NEEDS_USER_DECISION` 处理约束：
+
+1. 先提示用户二选一并停住等待用户输入。
+2. 禁止在当前轮使用阻塞等待命令（如 `Start-Sleep`）模拟倒计时自推进。
+3. 当 `allow_timeout_default=true` 且超时未收到用户选择时，由后续跟进周期按 `decision_source=timeout_default` 自动进入新的等待周期。
+
 ## 业务交付闭环
 
 ACP 实施完成只代表代码实施阶段结束，不代表任务已经交付。插件会在实施完成后进入 `NEEDS_DELIVERY_TEST`，要求主会话从真实业务入口执行交付测试。

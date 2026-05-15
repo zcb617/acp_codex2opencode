@@ -818,8 +818,12 @@ describe("bridge workflow approvals", () => {
     await restoredService.shutdown();
 
     expect(continued.success).toBe(true);
-    expect((continued.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_DECISION");
-    expect((continued.data as { user_message: string }).user_message).toContain("委派执行端无法继续回传");
+    expect((continued.data as { workflow_status: string }).workflow_status).toBe("NEEDS_ACP_SESSION_DECISION");
+    expect((continued.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "handoff_to_main",
+      "cancel_follow_up"
+    ]);
+    expect((continued.data as { user_message: string }).user_message).toContain("已结束或不可用");
   });
 
   it("should keep waiting and return progress when ACP emits output before silence timeout", async () => {
@@ -905,6 +909,125 @@ describe("bridge workflow approvals", () => {
 
     expect(status.success).toBe(true);
     expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_DECISION");
+  });
+
+  it("should expose a decision deadline when timeout-default continue is allowed", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: "",
+      eventCount: 0
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-decision-deadline-001",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-decision-deadline-001");
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10;
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-decision-deadline-001",
+      action: "status"
+    });
+
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_DECISION");
+    const policy = (
+      status.data as {
+        user_decision_policy: {
+          allow_timeout_default: boolean;
+          timeout_default_deadline_at: string | null;
+          timeout_default_remaining_seconds: number | null;
+          decision_prompted_at: string | null;
+        };
+      }
+    ).user_decision_policy;
+    expect(policy.allow_timeout_default).toBe(true);
+    expect(policy.timeout_default_deadline_at).toEqual(expect.any(String));
+    expect(policy.timeout_default_remaining_seconds).not.toBeNull();
+    expect(policy.decision_prompted_at).toEqual(expect.any(String));
+  });
+
+  it("should auto-continue by timeout_default on a later status poll after the decision window expires", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(1_000);
+      workflow.stage = "WAITING_DESIGN_APPROVAL";
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: "",
+      eventCount: 0
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-auto-continue-after-timeout",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get("D:/repo::task-auto-continue-after-timeout");
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 1;
+    workflow!.lastProgressAtMs = Date.now() - 10_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const firstDecision = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-auto-continue-after-timeout",
+      action: "status"
+    });
+    expect(firstDecision.success).toBe(true);
+    expect((firstDecision.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_DECISION");
+
+    workflow!.userDecisionTimeoutAtMs = Date.now() - 1;
+    workflow!.userDecisionTimeoutAt = new Date(workflow!.userDecisionTimeoutAtMs).toISOString();
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const autoContinued = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-auto-continue-after-timeout",
+      action: "status"
+    });
+
+    expect(autoContinued.success).toBe(true);
+    expect((autoContinued.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
+    expect(
+      (
+        autoContinued.data as {
+          poll_policy: { consecutive_timeout_defaults: number; last_timeout_default_auto_continue_at: string | null };
+        }
+      ).poll_policy.consecutive_timeout_defaults
+    ).toBe(1);
+    expect(
+      (
+        autoContinued.data as {
+          poll_policy: { consecutive_timeout_defaults: number; last_timeout_default_auto_continue_at: string | null };
+        }
+      ).poll_policy.last_timeout_default_auto_continue_at
+    ).toEqual(expect.any(String));
   });
 
   it("should clear user-decision state when ACP outputs progress while waiting", async () => {
@@ -1500,7 +1623,7 @@ describe("bridge workflow approvals", () => {
     expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_ACP_SESSION_DECISION");
     expect((remediation.data as { next_action_required: string[] }).next_action_required).toEqual([
       "handoff_to_main",
-      "restart_acp_session"
+      "cancel_follow_up"
     ]);
     expect((remediation.data as { pending_remediation_plan: string }).pending_remediation_plan).toContain(
       "整改方案"
