@@ -245,4 +245,83 @@ describe("document gate quality checks", () => {
     expect(result.passed).toBe(false);
     expect(result.missingSections).toContain("开发任务拆分章节缺少 Task 明细（至少一个 `### Task XX`）");
   });
+
+  it("should reject bugfix planning docs when 4.x required structure details are missing", async () => {
+    const service = createService();
+    const hacked = service as unknown as {
+      collectTurnOutputText: (turnId: string | undefined, summary: string) => Promise<string>;
+      evaluateRequiredSections: (
+        result: { success: boolean; data: { turn_id: string; summary: string } },
+        requiredSections: string[],
+        outputDocumentPath?: string
+      ) => Promise<{ passed: boolean; missingSections: string[] }>;
+    };
+
+    const bugfixPlan = [
+      "## 1. Bug 与设计来源",
+      "- Bug 名称：恢复后流程丢失",
+      "- 设计文档：docs/superpowers/specs/xxx-design.md",
+      "",
+      "## 2. 设计目标覆盖表",
+      "| 设计目标 | 实施任务 |",
+      "|---|---|",
+      "| 恢复流程 | Task 01 |",
+      "",
+      "## 3. 实施任务拆分",
+      "### Task 01: 修复恢复流程",
+      "- 目标：恢复不中断。",
+      "- 设计来源：设计章节 5.2。",
+      "- 文件范围：src/session/bridge-service.ts",
+      "- 实施步骤：1) 补状态判断",
+      "- 伪代码：执行修复",
+      "- 验证命令：npm run test:unit",
+      "- 完成标准：恢复成功",
+      "- 对应业务交付场景：DT-01",
+      "",
+      "## 4. TDD 与红灯测试计划",
+      "| 测试编号 | 覆盖失败 |",
+      "|---|---|",
+      "| UT-01 | 流程丢失 |",
+      "",
+      "## 5. 自动化验证计划",
+      "- 只跑单测",
+      "",
+      "## 6. 真实业务交付测试计划",
+      "- 先试一下能不能恢复",
+      "",
+      "## 7. 交付测试失败整改记录",
+      "- 待补充",
+      "",
+      "## 8. 设计完成核对清单",
+      "- [ ] 待补充",
+      "",
+      "## 9. 上下文恢复说明",
+      "- 后续再看"
+    ].join("\n");
+
+    hacked.collectTurnOutputText = vi.fn(async () => bugfixPlan);
+    const result = await hacked.evaluateRequiredSections(
+      {
+        success: true,
+        data: {
+          turn_id: "turn_bugfix_plan_01",
+          summary: bugfixPlan
+        }
+      },
+      [
+        "Bug 与设计来源",
+        "设计目标覆盖表",
+        "实施任务拆分",
+        "TDD 与红灯测试计划",
+        "自动化验证计划",
+        "真实业务交付测试计划",
+        "交付测试失败整改记录",
+        "设计完成核对清单",
+        "上下文恢复说明"
+      ]
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.missingSections.some((item) => item.includes("章节缺少"))).toBe(true);
+  });
 });

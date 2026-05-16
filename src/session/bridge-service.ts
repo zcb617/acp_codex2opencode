@@ -4940,6 +4940,94 @@ export class BridgeService {
       }
     }
 
+    const sourceSection = this.findSectionByKeywords(sections, ["Bug 与设计来源"]);
+    if (sourceSection) {
+      const normalized = this.normalizeForMatch(sourceSection.body);
+      const missing = ["bug名称", "设计文档", "当前失败链路", "本计划目标", "本计划不处理"].filter(
+        (item) => !normalized.includes(this.normalizeForMatch(item))
+      );
+      if (missing.length > 0) {
+        issues.push(`Bug 与设计来源章节缺少字段：${missing.join("、")}`);
+      }
+    }
+
+    const coverageSection = this.findSectionByKeywords(sections, ["设计目标覆盖表"]);
+    if (coverageSection) {
+      const normalized = this.normalizeForMatch(coverageSection.body);
+      const missingColumns = ["设计目标", "实施任务", "自动化验证", "交付测试验证", "状态"].filter(
+        (item) => !normalized.includes(this.normalizeForMatch(item))
+      );
+      if (missingColumns.length > 0) {
+        issues.push(`设计目标覆盖表章节缺少列：${missingColumns.join("、")}`);
+      }
+    }
+
+    const taskSection = this.findSectionByKeywords(sections, ["实施任务拆分"]);
+    if (taskSection) {
+      issues.push(...this.findTaskSectionIssues(taskSection.body));
+    }
+
+    const tddSection = this.findSectionByKeywords(sections, ["TDD 与红灯测试计划"]);
+    if (tddSection) {
+      const normalized = this.normalizeForMatch(tddSection.body);
+      const missingColumns = ["测试编号", "覆盖失败", "红灯表现", "修复后绿灯标准"].filter(
+        (item) => !normalized.includes(this.normalizeForMatch(item))
+      );
+      if (missingColumns.length > 0) {
+        issues.push(`TDD 与红灯测试计划章节缺少列：${missingColumns.join("、")}`);
+      }
+    }
+
+    const autoSection = this.findSectionByKeywords(sections, ["自动化验证计划"]);
+    if (autoSection) {
+      const normalized = this.normalizeForMatch(autoSection.body);
+      const requiredParts = ["精准回归测试", "相关模块测试", "全量测试", "编译或构建", "插件或安装检查"];
+      const missingParts = requiredParts.filter((item) => !normalized.includes(this.normalizeForMatch(item)));
+      if (missingParts.length > 0) {
+        issues.push(`自动化验证计划章节缺少内容：${missingParts.join("、")}`);
+      }
+      if (!/(npm|pnpm|yarn|mvn|gradle|go test|pytest|dotnet test|cargo test|bash|powershell|sh)/iu.test(autoSection.body)) {
+        issues.push("自动化验证计划章节缺少可执行命令");
+      }
+    }
+
+    const deliverySection = this.findSectionByKeywords(sections, ["真实业务交付测试计划"]);
+    if (deliverySection) {
+      const normalized = this.normalizeForMatch(deliverySection.body);
+      const requiredParts = ["真实入口", "操作步骤", "通过标准", "失败后整改与再测试"];
+      const missingParts = requiredParts.filter((item) => !normalized.includes(this.normalizeForMatch(item)));
+      if (missingParts.length > 0) {
+        issues.push(`真实业务交付测试计划章节缺少内容：${missingParts.join("、")}`);
+      }
+    }
+
+    const failRecordSection = this.findSectionByKeywords(sections, ["交付测试失败整改记录"]);
+    if (failRecordSection) {
+      const normalized = this.normalizeForMatch(failRecordSection.body);
+      const requiredFields = ["失败场景", "输入数据", "期望结果", "实际结果", "根因分析", "修复方案", "复测命令", "复测结果"];
+      const missingFields = requiredFields.filter((item) => !normalized.includes(this.normalizeForMatch(item)));
+      if (missingFields.length > 0) {
+        issues.push(`交付测试失败整改记录章节缺少字段：${missingFields.join("、")}`);
+      }
+    }
+
+    const checklistSection = this.findSectionByKeywords(sections, ["设计完成核对清单"]);
+    if (checklistSection) {
+      if (!/\[[ xX]\]/.test(checklistSection.body)) {
+        issues.push("设计完成核对清单章节缺少勾选项（- [ ] / - [x]）");
+      }
+    }
+
+    const recoverySection = this.findSectionByKeywords(sections, ["上下文恢复说明"]);
+    if (recoverySection) {
+      const normalized = this.normalizeForMatch(recoverySection.body);
+      const requiredParts = ["当前进度", "下一步", "恢复入口"];
+      const missingParts = requiredParts.filter((item) => !normalized.includes(this.normalizeForMatch(item)));
+      if (missingParts.length > 0) {
+        issues.push(`上下文恢复说明章节缺少内容：${missingParts.join("、")}`);
+      }
+    }
+
     return issues;
   }
 
