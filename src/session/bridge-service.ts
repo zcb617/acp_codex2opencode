@@ -218,6 +218,8 @@ interface WorkflowProgressDelta {
   eventCount: number;
   turnId?: string;
   latestEventSeq?: number;
+  summary?: string;
+  summaryTruncated?: boolean;
 }
 
 interface WorkflowProgressUpdate extends WorkflowProgressDelta {
@@ -4520,6 +4522,8 @@ export class BridgeService {
     return {
       has_new_output: update?.hasNewOutput ?? false,
       text: update?.text ?? "",
+      summary: update?.summary ?? "",
+      summary_truncated: update?.summaryTruncated ?? false,
       event_count: update?.eventCount ?? 0,
       turn_id: update?.turnId,
       latest_event_seq: update?.latestEventSeq,
@@ -5544,10 +5548,14 @@ export class BridgeService {
     }
 
     const latestEventSeq = newEvents[newEvents.length - 1]?.eventSeq ?? lastReportedSeq;
+    const compacted = this.compactProgressText(chunks.join("\n"));
+    const { summary, summaryTruncated } = this.extractConciseSummary(compacted);
     workflow.progressCursorByTurn[turnId] = latestEventSeq;
     return {
       hasNewOutput: true,
-      text: this.compactProgressText(chunks.join("\n")),
+      text: compacted,
+      summary,
+      summaryTruncated,
       eventCount: newEvents.length,
       turnId,
       latestEventSeq
@@ -5566,6 +5574,26 @@ export class BridgeService {
       return compacted;
     }
     return `${compacted.slice(0, maxChars)}\n[已截断，仅用于进展摘要]`;
+  }
+
+  private extractConciseSummary(text: string, maxLength = 300): { summary: string; summaryTruncated: boolean } {
+    if (!text || text.length === 0) {
+      return { summary: "", summaryTruncated: false };
+    }
+    // 优先取第一行，若第一行过短则合并后续行直到接近上限
+    const lines = text.split("\n");
+    let summary = lines[0] ?? "";
+    let idx = 1;
+    while (idx < lines.length && summary.length < maxLength * 0.6) {
+      summary += " " + lines[idx];
+      idx += 1;
+    }
+    summary = summary.trim();
+    if (summary.length > maxLength) {
+      summary = summary.slice(0, maxLength);
+      return { summary, summaryTruncated: true };
+    }
+    return { summary, summaryTruncated: false };
   }
 
   private async collectTurnOutputRawText(

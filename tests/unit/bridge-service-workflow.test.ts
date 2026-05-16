@@ -2090,4 +2090,261 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { default_option: string }).default_option).toBe("1");
     expect(hacked.initSession).not.toHaveBeenCalled();
   });
+  it('UT-01: should return progress_update.summary when ACP has new output', async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(50);
+      workflow.stage = 'WAITING_DESIGN_APPROVAL';
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: true,
+      text: 'Completed initial modifications, now running tests.',
+      summary: 'Completed initial modifications, now running tests.',
+      summaryTruncated: false,
+      eventCount: 1
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-001',
+      start_phase: 'design',
+      design_planning_executor: 'acp'
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get('d:/repo::ut-001');
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10;
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-001',
+      action: 'status'
+    });
+
+    expect(status.success).toBe(true);
+    const pu = (status.data as { progress_update: { has_new_output: boolean; summary: string } }).progress_update;
+    expect(pu.has_new_output).toBe(true);
+    expect(pu.summary).toBeDefined();
+    expect(typeof pu.summary).toBe('string');
+    expect(pu.summary.length).toBeGreaterThan(0);
+  });
+
+  it('UT-02: summary should be concise and summary_truncated should reflect length', async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(50);
+      workflow.stage = 'WAITING_DESIGN_APPROVAL';
+    });
+    const longLine = 'A'.repeat(500);
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: true,
+      text: longLine,
+      summary: longLine.slice(0, 300),
+      summaryTruncated: true,
+      eventCount: 1
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-002',
+      start_phase: 'design',
+      design_planning_executor: 'acp'
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get('d:/repo::ut-002');
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10;
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-002',
+      action: 'status'
+    });
+
+    expect(status.success).toBe(true);
+    const pu = (status.data as { progress_update: { summary: string; summary_truncated: boolean } }).progress_update;
+    expect(pu.summary.length).toBeLessThanOrEqual(300);
+    expect(pu.summary_truncated).toBe(true);
+  });
+
+  it('UT-03: should stay RUNNING_* when silence is below threshold', async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(50);
+      workflow.stage = 'WAITING_DESIGN_APPROVAL';
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: '',
+      eventCount: 0
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-003',
+      start_phase: 'design',
+      design_planning_executor: 'acp'
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get('d:/repo::ut-003');
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10_000;
+    workflow!.lastProgressAtMs = Date.now() - 100;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-003',
+      action: 'status'
+    });
+
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe('RUNNING_DESIGN');
+    const nar = (status.data as { next_action_required: string[] }).next_action_required;
+    expect(nar).not.toContain('continue_wait');
+    expect(nar).not.toContain('handoff_to_main');
+  });
+
+  it('UT-04: should enter NEEDS_USER_DECISION when silence exceeds threshold', async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(50);
+      workflow.stage = 'WAITING_DESIGN_APPROVAL';
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: '',
+      eventCount: 0
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-004',
+      start_phase: 'design',
+      design_planning_executor: 'acp'
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get('d:/repo::ut-004');
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10;
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-004',
+      action: 'status'
+    });
+
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe('NEEDS_USER_DECISION');
+    expect((status.data as { next_action_required: string[] }).next_action_required).toEqual([
+      'continue_wait',
+      'handoff_to_main'
+    ]);
+  });
+
+  it('UT-05: should clear user-decision window and resume RUNNING when new progress appears after decision', async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(50);
+      workflow.stage = 'WAITING_DESIGN_APPROVAL';
+    });
+
+    await startAndConfirmModel(service, {
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-005',
+      start_phase: 'design',
+      design_planning_executor: 'acp'
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get('d:/repo::ut-005');
+    expect(workflow).toBeDefined();
+
+    // First: reach NEEDS_USER_DECISION with no new output
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: '',
+      eventCount: 0
+    }));
+    workflow!.silenceDecisionMs = 1;
+    workflow!.lastProgressAtMs = Date.now() - 10_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const decision = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-005',
+      action: 'status'
+    });
+    expect(decision.success).toBe(true);
+    expect((decision.data as { workflow_status: string }).workflow_status).toBe('NEEDS_USER_DECISION');
+    expect(workflow!.userDecisionPromptedAtMs).toBeDefined();
+
+    // User chooses continue_wait
+    const cont = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-005',
+      action: 'continue_wait'
+    });
+    expect(cont.success).toBe(true);
+    expect((cont.data as { workflow_status: string }).workflow_status).toBe('RUNNING_DESIGN');
+
+    // Next poll: new output appears
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: true,
+      text: 'Progress resumed, continuing work.',
+      summary: 'Progress resumed, continuing work.',
+      summaryTruncated: false,
+      eventCount: 1
+    }));
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const resumed = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-005',
+      action: 'status'
+    });
+    expect(resumed.success).toBe(true);
+    expect((resumed.data as { workflow_status: string }).workflow_status).toBe('RUNNING_DESIGN');
+    expect(workflow!.userDecisionPromptedAtMs).toBeUndefined();
+    expect(workflow!.consecutiveTimeoutDefaultContinueCount).toBe(0);
+    const pu = (resumed.data as { progress_update: { has_new_output: boolean; summary: string } }).progress_update;
+    expect(pu.has_new_output).toBe(true);
+    expect(pu.summary.length).toBeGreaterThan(0);
+  });
+
+  it('UT-06: skill doc should mention summary usage for concise progress reporting', async () => {
+    const fsMod = await import('node:fs/promises');
+    const skillText = await fsMod.readFile('skills/team-delegate/SKILL.md', 'utf8');
+    expect(skillText).toContain('简短进展总结');
+    expect(skillText).toContain('不粘贴完整原始过程');
+    expect(skillText).toContain('继续等待，不询问是否接手');
+  });
 });
