@@ -4736,6 +4736,9 @@ export class BridgeService {
     const missingSections = requiredSections.filter(
       (section) => !normalized.includes(this.normalizeForMatch(section))
     );
+    if (missingSections.length === 0) {
+      missingSections.push(...this.evaluateDocumentContentQuality(mergedText));
+    }
     if (outputDocumentPath && !outputDocumentReadable) {
       missingSections.unshift("输出文档文件");
     }
@@ -4750,6 +4753,123 @@ export class BridgeService {
       .toLowerCase()
       .replace(/\s+/g, "")
       .replace(/[，。；：:、\-_/\\|()[\]{}"'`]/g, "");
+  }
+
+  private evaluateDocumentContentQuality(documentText: string): string[] {
+    const issues: string[] = [];
+
+    const apiSection = this.extractSecondLevelSection(documentText, [
+      "api、数据模型与配置",
+      "api,数据模型与配置",
+      "api 数据模型与配置"
+    ]);
+    if (apiSection) {
+      const missingApiFields = this.findMissingApiContractFields(apiSection);
+      if (missingApiFields.length > 0) {
+        issues.push(`API、数据模型与配置章节缺少字段：${missingApiFields.join("、")}`);
+      }
+    }
+
+    const taskSection = this.extractSecondLevelSection(documentText, ["开发任务拆分", "实施任务拆分"]);
+    if (taskSection) {
+      issues.push(...this.findTaskSectionIssues(taskSection));
+    }
+
+    return issues;
+  }
+
+  private extractSecondLevelSection(documentText: string, sectionNames: string[]): string | undefined {
+    const lines = documentText.replace(/\r\n/g, "\n").split("\n");
+    const normalizedTargets = sectionNames.map((name) => this.normalizeForMatch(name));
+    const headings: Array<{ index: number; normalizedHeading: string }> = [];
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (!line.trimStart().startsWith("## ")) {
+        continue;
+      }
+      headings.push({
+        index,
+        normalizedHeading: this.normalizeForMatch(line)
+      });
+    }
+
+    const hit = headings.find((heading) =>
+      normalizedTargets.some((target) => heading.normalizedHeading.includes(target))
+    );
+    if (!hit) {
+      return undefined;
+    }
+
+    const nextHeading = headings.find((heading) => heading.index > hit.index);
+    const endIndex = nextHeading ? nextHeading.index : lines.length;
+    return lines.slice(hit.index, endIndex).join("\n");
+  }
+
+  private findMissingApiContractFields(sectionText: string): string[] {
+    const normalized = this.normalizeForMatch(sectionText);
+    const rules: Array<{ label: string; tokens: string[] }> = [
+      { label: "请求方法", tokens: ["请求方法", "method"] },
+      { label: "路径", tokens: ["路径", "path"] },
+      { label: "入参", tokens: ["入参", "请求参数", "request"] },
+      { label: "出参", tokens: ["出参", "响应参数", "response"] },
+      { label: "错误码", tokens: ["错误码", "errorcode", "错误处理"] },
+      { label: "幂等规则", tokens: ["幂等", "idempotent"] },
+      { label: "权限/鉴权", tokens: ["权限", "鉴权", "auth"] },
+      { label: "数据表或实体", tokens: ["数据表", "实体", "模型"] },
+      { label: "环境变量", tokens: ["环境变量", "env"] }
+    ];
+
+    return rules
+      .filter((rule) =>
+        !rule.tokens.some((token) => normalized.includes(this.normalizeForMatch(token)))
+      )
+      .map((rule) => rule.label);
+  }
+
+  private findTaskSectionIssues(sectionText: string): string[] {
+    const lines = sectionText.replace(/\r\n/g, "\n").split("\n");
+    const taskHeadingIndexes: number[] = [];
+    const taskHeadingRegex = /^\s*###\s*Task\s*\d+\s*[:：]/i;
+    for (let index = 0; index < lines.length; index += 1) {
+      if (taskHeadingRegex.test(lines[index] ?? "")) {
+        taskHeadingIndexes.push(index);
+      }
+    }
+
+    if (taskHeadingIndexes.length === 0) {
+      return ["开发任务拆分章节缺少 Task 明细（至少一个 `### Task XX`）"];
+    }
+
+    const issues: string[] = [];
+    for (let taskIndex = 0; taskIndex < taskHeadingIndexes.length; taskIndex += 1) {
+      const start = taskHeadingIndexes[taskIndex] ?? 0;
+      const end = taskHeadingIndexes[taskIndex + 1] ?? lines.length;
+      const blockText = lines.slice(start, end).join("\n");
+      const normalized = this.normalizeForMatch(blockText);
+      const title = (lines[start] ?? `Task#${taskIndex + 1}`).trim();
+
+      const rules: Array<{ label: string; tokens: string[] }> = [
+        { label: "目标", tokens: ["目标"] },
+        { label: "文件范围", tokens: ["文件", "涉及文件", "修改文件", "新增文件"] },
+        { label: "实施步骤", tokens: ["实施步骤", "步骤"] },
+        { label: "验证命令", tokens: ["验证命令", "验证"] },
+        { label: "完成标准", tokens: ["完成标准", "验收标准", "完成定义"] },
+        { label: "对应交付场景", tokens: ["对应业务交付场景", "对应交付场景"] }
+      ];
+
+      const missing = rules
+        .filter((rule) =>
+          !rule.tokens.some((token) => normalized.includes(this.normalizeForMatch(token)))
+        )
+        .map((rule) => rule.label);
+
+      if (missing.length > 0) {
+        issues.push(`${title} 缺少：${missing.join("、")}`);
+      }
+    }
+
+    return issues;
   }
 
   private async collectTurnOutputText(turnId: string | undefined, summary: string): Promise<string> {
