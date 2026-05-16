@@ -1730,8 +1730,8 @@ export class BridgeService {
         current_stage: "NEEDS_MAIN_DESIGN",
         business_stage: "方案制定",
         business_reason: "当前还没有完整方案，需要先完成方案制定。",
-        next_business_action: `由主会话继续制定方案，并写入 ${outputDocument.relativePath}`,
-        user_message: `当前还没有完整方案，需要先进入方案制定阶段。按约定方案制定由主会话执行，不需要选择 ACP 模型；输出必须是 Markdown 文档，路径为 ${outputDocument.relativePath}。`,
+        next_business_action: `由主会话先完成“写方案前前置梳理（清单+逐节点流程+异常控制点+用户确认循环）”，确认后再制定方案并写入 ${outputDocument.relativePath}`,
+        user_message: `当前还没有完整方案，需要先进入方案制定阶段。按约定方案制定由主会话执行，不需要选择 ACP 模型；但在写方案前，必须先基于代码完成前置梳理并让用户确认，确认后才能输出 Markdown 方案文件，路径为 ${outputDocument.relativePath}。`,
         required_output_document: {
           phase: "design",
           relative_path: outputDocument.relativePath,

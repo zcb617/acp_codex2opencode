@@ -61,6 +61,43 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("不得另造方案");
   });
 
+  it("must enforce confirmation loops for main-session design and planning docs", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("方案确认");
+    expect(skill).toContain("计划确认");
+    expect(skill).toContain("如无补充请回复“可以/同意/确认”");
+    expect(skill).toContain("确认类判定");
+    expect(skill).toContain("补充类判定");
+    expect(skill).toContain("修订同一份文档并再次发起确认");
+    expect(skill).toContain("直到用户给出确认类回复");
+    expect(skill).toContain("必须在原文档上增量修订");
+    expect(skill).toContain("绝对禁止重写整篇文档");
+    expect(skill).toContain("禁止通过新建“v2/新版”文档替代原文档");
+    expect(skill).toContain("保持同一路径文件不变");
+    expect(skill).toContain("保留已确认内容与章节结构");
+  });
+
+  it("must require pre-design node-by-node workflow analysis before writing design documents", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("写方案前前置梳理节点流");
+    expect(skill).toContain("每个节点都必须逐个说明");
+    expect(skill).toContain("现有功能升级");
+    expect(skill).toContain("新功能开发");
+    expect(skill).toContain("从本次任务涉及功能中去代码库查找现有代码");
+    expect(skill).toContain("所有当前代码中的业务流程");
+    expect(skill).toContain("修改后流程如何变化");
+    expect(skill).toContain("按功能点分类");
+    expect(skill).toContain("所有异常控制点");
+    expect(skill).toContain("什么情况下触发");
+    expect(skill).toContain("异常流程如何流转");
+    expect(skill).toContain("用户确认/补充");
+    expect(skill).toContain("修订回环");
+    expect(skill).toContain("持续到用户明确确认为止");
+    expect(skill).toContain("仅当节点 5 得到确认类回复后，才允许编制方案并写入");
+  });
+
   it("must require timeout-default decisions to preserve user choice and reset counts correctly", async () => {
     const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
 
