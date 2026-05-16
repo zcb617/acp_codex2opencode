@@ -69,6 +69,7 @@ export interface CloseInput {
 export interface ExecuteTaskInput {
   workspace_path: string;
   requirement_text: string;
+  requirements_package?: RequirementMiningPackageInput;
   task_id?: string;
   session_alias?: string;
   design_planning_executor?: DesignPlanningExecutor;
@@ -132,6 +133,19 @@ type WorkflowEntryPhase = "design" | "planning" | "implementation";
 type DesignPlanningExecutor = "main" | "acp";
 type DevelopmentType = "feature" | "bugfix";
 
+interface RequirementMiningPackageInput {
+  objective?: string;
+  user_ideas?: string[];
+  business_scenarios?: string[];
+  in_scope?: string[];
+  out_of_scope?: string[];
+  constraints?: string[];
+  acceptance_criteria?: string[];
+  risks?: string[];
+  open_questions?: string[];
+  source?: string;
+}
+
 interface WorkflowEntryDetection {
   phase: WorkflowEntryPhase | "need_user_input";
   evidence: string[];
@@ -155,6 +169,25 @@ interface DevelopmentTypeDecision {
   type: DevelopmentType | "need_user_input";
   evidence: string[];
   missingContext: string[];
+}
+
+interface RequirementMiningPackage {
+  objective: string;
+  userIdeas: string[];
+  businessScenarios: string[];
+  inScope: string[];
+  outOfScope: string[];
+  constraints: string[];
+  acceptanceCriteria: string[];
+  risks: string[];
+  openQuestions: string[];
+  source?: string;
+}
+
+interface RequirementMiningGateResult {
+  passed: boolean;
+  missingSlots: string[];
+  packageData?: RequirementMiningPackage;
 }
 
 interface ImplementationPlanningGateResult {
@@ -526,6 +559,16 @@ const MODEL_PREFERENCE_FILENAME = "preferred-models.json";
 const MAX_DETECTION_CONTEXT_CHARS = 60_000;
 const STAGE_DETECTION_PARSE_WAIT_MS = 8_000;
 const STAGE_DETECTION_PARSE_POLL_MS = 250;
+const REQUIREMENT_MINING_SLOT_LABELS = [
+  "requirements_package.objective",
+  "requirements_package.user_ideas",
+  "requirements_package.business_scenarios",
+  "requirements_package.in_scope",
+  "requirements_package.out_of_scope",
+  "requirements_package.constraints",
+  "requirements_package.acceptance_criteria",
+  "requirements_package.risks"
+];
 
 export class BridgeService {
   private readonly store: SqliteStore;
@@ -549,6 +592,8 @@ export class BridgeService {
   private readonly workflowByKey = new Map<string, TaskWorkflowState>();
 
   private readonly pendingStartInputByKey = new Map<string, ExecuteTaskInput>();
+
+  private readonly pendingRequirementMiningByTask = new Map<string, { sessionAlias: string; requestedAt: string }>();
 
   public constructor(runtime: BridgeRuntimeOptions, logger: Logger, metrics: MetricsRegistry) {
     this.runtime = runtime;
@@ -1114,15 +1159,40 @@ export class BridgeService {
 
     this.ensureWorkflowSlotAvailable(workflowKey);
     if (startDecision.phase === "need_user_input" || developmentDecision.type === "need_user_input") {
+      if (startDecision.phase === "need_user_input") {
+        this.pendingRequirementMiningByTask.set(taskId, {
+          sessionAlias,
+          requestedAt: now()
+        });
+      }
       await this.audit(requestId, "task.execute.start.needs-user-input", "codex", "OK", {
         sessionAlias,
         missingContext: [...startDecision.missingContext, ...developmentDecision.missingContext]
       });
       return makeResult(
         requestId,
-        this.buildNeedsUserInputResponse(sessionAlias, taskId, startDecision, developmentDecision)
+        this.buildNeedsUserInputResponse(sessionAlias, taskId, startDecision, developmentDecision, {
+          required: startDecision.phase === "need_user_input",
+          reason: "当前需求先进入 ian-think 的目标对齐阶段，随后必须完成深度需求挖掘，才能进入方案制定。"
+        })
       );
     }
+    const requirementMiningGate = this.evaluateRequirementMiningGate(taskId, input);
+    if (!requirementMiningGate.passed) {
+      await this.audit(requestId, "task.execute.start.requirement-mining-gate", "codex", "OK", {
+        sessionAlias,
+        missingSlots: requirementMiningGate.missingSlots
+      });
+      return makeResult(
+        requestId,
+        this.buildNeedsUserInputResponse(sessionAlias, taskId, startDecision, developmentDecision, {
+          required: true,
+          reason: "目标对齐后还缺少深度需求挖掘产物，当前不能直接进入方案或计划。",
+          missingSlots: requirementMiningGate.missingSlots
+        })
+      );
+    }
+    this.pendingRequirementMiningByTask.delete(taskId);
     if (startDecision.phase === "implementation") {
       const gate = await this.evaluateImplementationPlanningGate(
         input.workspace_path,
@@ -1729,14 +1799,98 @@ export class BridgeService {
     };
   }
 
+  private evaluateRequirementMiningGate(taskId: string, input: ExecuteTaskInput): RequirementMiningGateResult {
+    const pending = this.pendingRequirementMiningByTask.has(taskId);
+    if (!pending) {
+      return {
+        passed: true,
+        missingSlots: []
+      };
+    }
+    const packageData = this.normalizeRequirementMiningPackage(input.requirements_package);
+    if (!packageData) {
+      return {
+        passed: false,
+        missingSlots: REQUIREMENT_MINING_SLOT_LABELS
+      };
+    }
+    const missingSlots: string[] = [];
+    if (!packageData.objective) {
+      missingSlots.push("requirements_package.objective");
+    }
+    if (packageData.userIdeas.length === 0) {
+      missingSlots.push("requirements_package.user_ideas");
+    }
+    if (packageData.businessScenarios.length === 0) {
+      missingSlots.push("requirements_package.business_scenarios");
+    }
+    if (packageData.inScope.length === 0) {
+      missingSlots.push("requirements_package.in_scope");
+    }
+    if (packageData.outOfScope.length === 0) {
+      missingSlots.push("requirements_package.out_of_scope");
+    }
+    if (packageData.constraints.length === 0) {
+      missingSlots.push("requirements_package.constraints");
+    }
+    if (packageData.acceptanceCriteria.length === 0) {
+      missingSlots.push("requirements_package.acceptance_criteria");
+    }
+    if (packageData.risks.length === 0) {
+      missingSlots.push("requirements_package.risks");
+    }
+    return {
+      passed: missingSlots.length === 0,
+      missingSlots,
+      packageData
+    };
+  }
+
+  private normalizeRequirementMiningPackage(input?: RequirementMiningPackageInput): RequirementMiningPackage | null {
+    if (!input || typeof input !== "object") {
+      return null;
+    }
+    const objective = typeof input.objective === "string" ? input.objective.trim() : "";
+    const normalizeStringList = (value: unknown): string[] => {
+      if (!Array.isArray(value)) {
+        return [];
+      }
+      return value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter((item) => item.length > 0);
+    };
+    const source = typeof input.source === "string" && input.source.trim().length > 0 ? input.source.trim() : undefined;
+    return {
+      objective,
+      userIdeas: normalizeStringList(input.user_ideas),
+      businessScenarios: normalizeStringList(input.business_scenarios),
+      inScope: normalizeStringList(input.in_scope),
+      outOfScope: normalizeStringList(input.out_of_scope),
+      constraints: normalizeStringList(input.constraints),
+      acceptanceCriteria: normalizeStringList(input.acceptance_criteria),
+      risks: normalizeStringList(input.risks),
+      openQuestions: normalizeStringList(input.open_questions),
+      source
+    };
+  }
+
   private buildNeedsUserInputResponse(
     sessionAlias: string,
     taskId: string,
     startDecision: StartPhaseDecision,
-    developmentDecision?: DevelopmentTypeDecision
+    developmentDecision?: DevelopmentTypeDecision,
+    requirementMining?: {
+      required: boolean;
+      reason: string;
+      missingSlots?: string[];
+    }
   ): Record<string, unknown> {
     const missingContext = Array.from(
-      new Set([...startDecision.missingContext, ...(developmentDecision?.missingContext ?? [])])
+      new Set([
+        ...startDecision.missingContext,
+        ...(developmentDecision?.missingContext ?? []),
+        ...(requirementMining?.missingSlots ?? [])
+      ])
     );
     const developmentTypePayload = developmentDecision
       ? this.toDevelopmentDecisionPayload(developmentDecision)
@@ -1751,16 +1905,38 @@ export class BridgeService {
       workflow_status: "NEEDS_USER_INPUT",
       current_stage: "NEEDS_USER_INPUT",
       next_action_required: ["provide_context_then_restart"],
-      business_stage: "上下文补充",
-      business_reason: "当前信息还不足以判断应进入哪个业务阶段，或无法判断这是新增功能还是 BUG 修改。",
+      business_stage: requirementMining?.required ? "需求深挖" : "上下文补充",
+      business_reason: requirementMining?.required
+        ? requirementMining.reason
+        : "当前信息还不足以判断应进入哪个业务阶段，或无法判断这是新增功能还是 BUG 修改。",
       next_business_action:
-        "请先选择是否进入 ian-think 需求挖掘；若不进入，请直接补充缺失上下文后重新判断业务阶段和开发类型",
-      user_message:
-        "当前信息还不足以进入下一步。你可以先进入 ian-think 做需求挖掘（适合一句话或模糊需求），也可以直接补充缺失的方案、计划、实施约定，或明确这是新增功能还是 BUG 修改。",
+        requirementMining?.required
+          ? "请先用 ian-think 做目标对齐，再进入 brainstorming 做深度需求挖掘；若 brainstorming 不可用，请按 requirements_package 模板补齐后再重试 start。"
+          : "请先选择是否进入 ian-think 需求挖掘；若不进入，请直接补充缺失上下文后重新判断业务阶段和开发类型",
+      user_message: requirementMining?.required
+        ? "当前处于需求深挖阶段，暂不允许直接进入方案或计划。请提供 requirements_package（目标、用户想法、场景、范围、约束、验收、风险），补齐后再继续。"
+        : "当前信息还不足以进入下一步。你可以先进入 ian-think 做需求挖掘（适合一句话或模糊需求），也可以直接补充缺失的方案、计划、实施约定，或明确这是新增功能还是 BUG 修改。",
       detected_start_phase: null,
       detection_evidence: startDecision.evidence,
       ...developmentTypePayload,
-      missing_context: missingContext
+      missing_context: missingContext,
+      requirement_mining: requirementMining?.required
+        ? {
+            status: "required",
+            required_slots: REQUIREMENT_MINING_SLOT_LABELS,
+            missing_slots: requirementMining.missingSlots ?? [],
+            recommended_flow: [
+              "先在 ian-think 完成目标对齐",
+              "再在 brainstorming（或等价流程）完成深度需求挖掘",
+              "最后把结构化结果回填到 requirements_package 并重试 start"
+            ],
+            fallback_policy:
+              "如果 brainstorming skill 不可用，主会话必须按同一结构补齐 requirements_package，再继续流程。"
+          }
+        : {
+            status: "optional",
+            required_slots: REQUIREMENT_MINING_SLOT_LABELS
+          }
     };
   }
 

@@ -2,6 +2,19 @@ import { z } from "zod";
 
 const MAX_TIMEOUT_MS = 86_400_000;
 
+const RequirementMiningPackageSchema = z.object({
+  objective: z.string().min(1),
+  user_ideas: z.array(z.string().min(1)).min(1),
+  business_scenarios: z.array(z.string().min(1)).min(1),
+  in_scope: z.array(z.string().min(1)).min(1),
+  out_of_scope: z.array(z.string().min(1)).min(1),
+  constraints: z.array(z.string().min(1)).min(1),
+  acceptance_criteria: z.array(z.string().min(1)).min(1),
+  risks: z.array(z.string().min(1)).min(1),
+  open_questions: z.array(z.string().min(1)).optional(),
+  source: z.string().min(1).optional()
+});
+
 export const InitSessionSchema = z.object({
   workspace_path: z.string().min(1),
   session_alias: z.string().min(1),
@@ -45,6 +58,7 @@ export const CloseSchema = z.object({
 export const ExecuteTaskSchema = z.object({
   workspace_path: z.string().min(1),
   requirement_text: z.string().min(1),
+  requirements_package: RequirementMiningPackageSchema.optional(),
   task_id: z.string().min(1).optional(),
   session_alias: z.string().min(1).optional(),
   design_planning_executor: z.enum(["main", "acp"]).optional(),

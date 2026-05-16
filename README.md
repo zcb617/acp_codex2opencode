@@ -32,7 +32,7 @@
 4. 模型确认完成后，按主对话提供的 `start_phase` 分流：
    - `start_phase=design/planning`：默认返回主会话执行（`NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING`）
    - `start_phase=implementation`：直接进入 ACP 委派执行
-   - `start_phase=need_user_input`：返回 `NEEDS_USER_INPUT`；先询问是否进入 `ian-think` 需求挖掘，或直接补充 `missing_context`
+   - `start_phase=need_user_input`：返回 `NEEDS_USER_INPUT`；先进入 `ian-think` 做目标对齐，再进入需求深挖（优先 `brainstorming`，不可用则走主会话兜底）并补齐 `requirements_package`
    - 如需让 ACP 执行 Design / Planning，可在 `start` 传 `design_planning_executor=acp`
 5. Design / Planning 文档规则按主对话提供的 `development_type` 分流：
    - `development_type=feature`：读取 `team-delegate` skill 自带 `docs/` 下的可交付开发设计/计划指南
@@ -49,6 +49,19 @@
 14. `action=delivery_test_fail`：主会话已完成真实业务交付测试但测试失败，必须提供失败材料，插件进入整改闭环
 15. `action=remediation_approve`：用户确认整改方案和整改计划后，进入当前整改实施
 16. `action=cancel_follow_up`：完成 3 次整改后仍未通过时，用户取消后续工作，本次任务不声明交付完成
+
+`requirements_package`（需求深挖结构化产物）字段：
+
+- `objective`
+- `user_ideas`
+- `business_scenarios`
+- `in_scope`
+- `out_of_scope`
+- `constraints`
+- `acceptance_criteria`
+- `risks`
+- `open_questions`（可选）
+- `source`（可选）
 
 返回结果会包含：
 
