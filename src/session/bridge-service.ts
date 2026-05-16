@@ -4991,6 +4991,7 @@ export class BridgeService {
         { label: "设计来源", tokens: ["设计来源", "来源设计", "设计目标覆盖"] },
         { label: "文件范围", tokens: ["文件", "涉及文件", "修改文件", "新增文件"] },
         { label: "实施步骤", tokens: ["实施步骤", "步骤"] },
+        { label: "伪代码", tokens: ["伪代码", "pseudocode", "关键流程伪代码"] },
         { label: "验证命令", tokens: ["验证命令", "验证"] },
         { label: "完成标准", tokens: ["完成标准", "验收标准", "完成定义"] },
         { label: "对应交付场景", tokens: ["对应业务交付场景", "对应交付场景"] }
@@ -5005,9 +5006,41 @@ export class BridgeService {
       if (missing.length > 0) {
         issues.push(`${title} 缺少：${missing.join("、")}`);
       }
+
+      if (!missing.includes("伪代码")) {
+        const pseudoCodeIssue = this.validateTaskPseudocodeQuality(blockText);
+        if (pseudoCodeIssue) {
+          issues.push(`${title} ${pseudoCodeIssue}`);
+        }
+      }
     }
 
     return issues;
+  }
+
+  private validateTaskPseudocodeQuality(taskBlockText: string): string | undefined {
+    const lines = taskBlockText.replace(/\r\n/g, "\n").split("\n");
+    const pseudoStartIndex = lines.findIndex((line) => /(伪代码|pseudocode)/iu.test(line));
+    if (pseudoStartIndex < 0) {
+      return undefined;
+    }
+
+    const pseudoLines = lines.slice(pseudoStartIndex + 1);
+    const nonEmptyPseudoLines = pseudoLines.map((line) => line.trim()).filter((line) => line.length > 0);
+    if (nonEmptyPseudoLines.length < 5) {
+      return "中的伪代码不满足最小细化要求：至少 5 行有效步骤";
+    }
+
+    const normalized = this.normalizeForMatch(pseudoLines.join("\n"));
+    const hasControlStructure = /(if|else|switch|case|for|while|return|try|catch|throw)\b/i.test(pseudoLines.join("\n"));
+    const hasCallChain = /->|=>|\w+\(.*\)/.test(pseudoLines.join("\n"));
+    if (!hasControlStructure && !hasCallChain) {
+      return "中的伪代码不满足最小细化要求：必须包含控制结构或调用链";
+    }
+    if (!normalized.includes(this.normalizeForMatch("输入")) && !normalized.includes(this.normalizeForMatch("处理")) && !normalized.includes(this.normalizeForMatch("输出"))) {
+      return "中的伪代码不满足最小细化要求：需体现输入/处理/输出语义";
+    }
+    return undefined;
   }
 
   private async collectTurnOutputText(turnId: string | undefined, summary: string): Promise<string> {
