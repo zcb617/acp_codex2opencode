@@ -1174,6 +1174,8 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { next_action_required: string[] }).next_action_required).toEqual([
       "provide_context_then_restart"
     ]);
+    expect((start.data as { user_message: string }).user_message).toContain("ian-think");
+    expect((start.data as { user_message: string }).user_message).toContain("需求挖掘");
   });
 
   it("should not call ACP stage detection when start_phase is missing", async () => {

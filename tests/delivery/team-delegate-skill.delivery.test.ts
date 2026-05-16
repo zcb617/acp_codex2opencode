@@ -23,6 +23,13 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("need_user_input");
     expect(skill).toContain("禁止在插件内部通过关键词穷举判断开发类型");
     expect(skill).toContain("BUG 修改必须使用 BUG 修改设计和计划指南");
+    expect(skill).toContain("询问用户是否进入 `ian-think` 需求挖掘");
+    expect(skill).toContain("满足以下任一条件");
+    expect(skill).toContain("输入仅为“方法论文档/参考资料 + 一句话目标”");
+    expect(skill).toContain("缺少最小业务信息");
+    expect(skill).toContain("反例（必须判为 `need_user_input`");
+    expect(skill).toContain("我给你一个方法论，再补一句‘按这个思路加 AI 功能’。");
+    expect(skill).toContain("参考这份资料，帮我优化一下插件。");
   });
 
   it("must read plugin-owned guide docs instead of project docs", async () => {

@@ -16,7 +16,9 @@ describe("PT-00 install runbook contract", () => {
     expect(runbook).toContain("INSTALLATION-COMPLETED");
     expect(runbook).toContain("线性安装步骤（A 到 G）");
     expect(runbook).toContain("team-delegate");
+    expect(runbook).toContain("ian-think");
     expect(runbook).toContain("~/.codex/skills/team-delegate/docs/");
+    expect(runbook).toContain("~/.codex/skills/ian-think/SKILL.md");
     expect(runbook).toContain("不能读取用户项目目录下的 `docs/` 或 `docs/superpowers/`");
     expect(runbook).toContain("OPENCODE_CONFIG_CONTENT");
     expect(runbook).toContain("86400000");

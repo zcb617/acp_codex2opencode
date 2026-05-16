@@ -13,6 +13,7 @@
 
 - `delegate.task.execute`
 - Skill：`team-delegate`
+- Skill：`ian-think`（用于模糊需求的需求挖掘）
 
 `team-delegate` 已加入硬守卫：
 
@@ -31,7 +32,7 @@
 4. 模型确认完成后，按主对话提供的 `start_phase` 分流：
    - `start_phase=design/planning`：默认返回主会话执行（`NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING`）
    - `start_phase=implementation`：直接进入 ACP 委派执行
-   - `start_phase=need_user_input`：返回 `NEEDS_USER_INPUT` 并要求补充 `missing_context`
+   - `start_phase=need_user_input`：返回 `NEEDS_USER_INPUT`；先询问是否进入 `ian-think` 需求挖掘，或直接补充 `missing_context`
    - 如需让 ACP 执行 Design / Planning，可在 `start` 传 `design_planning_executor=acp`
 5. Design / Planning 文档规则按主对话提供的 `development_type` 分流：
    - `development_type=feature`：读取 `team-delegate` skill 自带 `docs/` 下的可交付开发设计/计划指南
@@ -80,7 +81,7 @@ ACP 实施完成只代表代码实施阶段结束，不代表任务已经交付�
 最小前置动作：
 
 1. 先在主对话完成起始阶段判定，再调用 `delegate.task.execute(action=start)`。
-2. 判定不明确时，用 `start_phase=need_user_input` + `missing_context` 明确向用户索取必要信息。
+2. 判定不明确时，用 `start_phase=need_user_input` + `missing_context` 明确向用户索取必要信息；若需求仍模糊，先询问是否进入 `ian-think` 做需求挖掘。
 3. 开发类型判定不明确时，用 `development_type=need_user_input` + `missing_context` 明确向用户索取新增功能或 BUG 修改信息。
 
 起点判定规则（主对话模型决策）：
@@ -134,7 +135,7 @@ npm run plugin:install-local
 2. 本地 marketplace 生成与注册。
 3. 插件启用写入 `~/.codex/config.toml`。
 4. MCP 兜底配置写入 `[mcp_servers.acp_codex2opencode_plugin]`（含 `OPENCODE_CONFIG_CONTENT` 自动授权）。
-5. 自动安装 `team-delegate` 到 `~/.codex/skills/team-delegate`，并安装四份指南到 `~/.codex/skills/team-delegate/docs/`。
+5. 自动安装 `team-delegate` 与 `ian-think` 到 `~/.codex/skills/`，并安装四份指南到 `~/.codex/skills/team-delegate/docs/`。
 
 脚本输出 `INSTALLATION-COMPLETED` 即表示安装完成。  
 详细线性步骤见：
