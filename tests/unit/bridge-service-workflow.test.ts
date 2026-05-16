@@ -349,6 +349,61 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { user_message: string }).user_message).toContain("选择执行模型");
   });
 
+  it("should block implementation start when referenced plan document fails strict gate", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as Record<string, unknown>;
+    const invalidPlanPath = join(process.cwd(), "tests", "2026-05-16-erp-ai-adapter-enhancement-plan.md");
+
+    const start = await service.executeTask({
+      workspace_path: process.cwd(),
+      requirement_text: `方案和计划都已经确认，直接进入实施。计划文档在 ${invalidPlanPath}。`,
+      session_alias: "task-implementation-plan-gate-fail",
+      action: "start",
+      start_phase: "implementation",
+      start_phase_reason: "用户明确要求直接实施。",
+      development_type: "feature"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
+    expect((start.data as { business_stage: string }).business_stage).toBe("计划修订");
+    expect((start.data as { user_message: string }).user_message).toContain("计划文档");
+    expect((start.data as { missing_sections: string[] }).missing_sections.some((item) => item.includes("Task 明细"))).toBe(
+      true
+    );
+    expect(hacked.listConfiguredModelsFromOpencode as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it("should block implementation start by plan gate even when restoring existing workflow", async () => {
+    const service = mockBridgeService();
+    const hacked = service as unknown as Record<string, unknown>;
+    const invalidPlanPath = join(process.cwd(), "tests", "2026-05-16-erp-ai-adapter-enhancement-plan.md");
+    hacked.restoreExistingWorkflowForStart = vi.fn(async () => ({
+      bridgeSessionId: "bs_existing",
+      stage: "RUNNING_IMPLEMENTATION"
+    }));
+
+    const start = await service.executeTask({
+      workspace_path: process.cwd(),
+      requirement_text: `方案和计划都已经确认，直接进入实施。计划文档在 ${invalidPlanPath}。`,
+      session_alias: "task-implementation-plan-gate-restore-existing",
+      action: "start",
+      start_phase: "implementation",
+      start_phase_reason: "已有实施流程，需要在继续前重新校验计划。",
+      development_type: "feature"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
+    expect((start.data as { business_stage: string }).business_stage).toBe("计划修订");
+    expect((start.data as { missing_sections: string[] }).missing_sections.some((item) => item.includes("Task 明细"))).toBe(
+      true
+    );
+    expect(hacked.listConfiguredModelsFromOpencode as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
   it("should block planning approve before design approve", async () => {
     const service = mockBridgeService();
     const start = await startAndConfirmModel(service, {

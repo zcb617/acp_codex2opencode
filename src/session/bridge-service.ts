@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { MetricsRegistry } from "../observability/metrics.js";
@@ -155,6 +155,14 @@ interface DevelopmentTypeDecision {
   type: DevelopmentType | "need_user_input";
   evidence: string[];
   missingContext: string[];
+}
+
+interface ImplementationPlanningGateResult {
+  enforced: boolean;
+  passed: boolean;
+  missingSections: string[];
+  evaluatedPaths: string[];
+  failedPaths: string[];
 }
 
 interface ModelPreferenceStore {
@@ -1065,8 +1073,37 @@ export class BridgeService {
     workflowKey: string
   ): Promise<BridgeResult<unknown>> {
     await this.cleanupExpiredOtherTaskWorkflows(input.workspace_path, taskId);
+    const startDecision = this.resolveStartPhaseDecision(input);
+    const developmentDecision = this.resolveDevelopmentTypeDecision(input);
     const existingWorkflow = await this.restoreExistingWorkflowForStart(workflowKey);
     if (existingWorkflow) {
+      if (startDecision.phase === "implementation" && developmentDecision.type !== "need_user_input") {
+        const gate = await this.evaluateImplementationPlanningGate(
+          input.workspace_path,
+          input.requirement_text,
+          developmentDecision.type
+        );
+        if (gate.enforced && !gate.passed) {
+          await this.audit(
+            requestId,
+            "task.execute.start.restore-existing.implementation-plan-gate-failed",
+            "codex",
+            "OK",
+            {
+              sessionAlias,
+              bridgeSessionId: existingWorkflow.bridgeSessionId,
+              stage: existingWorkflow.stage,
+              evaluatedPaths: gate.evaluatedPaths,
+              failedPaths: gate.failedPaths,
+              missingSections: gate.missingSections
+            }
+          );
+          return makeResult(
+            requestId,
+            this.buildImplementationPlanGateNeedsInputResponse(sessionAlias, taskId, developmentDecision, gate)
+          );
+        }
+      }
       await this.audit(requestId, "task.execute.start.restore-existing", "codex", "OK", {
         sessionAlias,
         bridgeSessionId: existingWorkflow.bridgeSessionId,
@@ -1076,8 +1113,6 @@ export class BridgeService {
     }
 
     this.ensureWorkflowSlotAvailable(workflowKey);
-    const startDecision = this.resolveStartPhaseDecision(input);
-    const developmentDecision = this.resolveDevelopmentTypeDecision(input);
     if (startDecision.phase === "need_user_input" || developmentDecision.type === "need_user_input") {
       await this.audit(requestId, "task.execute.start.needs-user-input", "codex", "OK", {
         sessionAlias,
@@ -1087,6 +1122,25 @@ export class BridgeService {
         requestId,
         this.buildNeedsUserInputResponse(sessionAlias, taskId, startDecision, developmentDecision)
       );
+    }
+    if (startDecision.phase === "implementation") {
+      const gate = await this.evaluateImplementationPlanningGate(
+        input.workspace_path,
+        input.requirement_text,
+        developmentDecision.type
+      );
+      if (gate.enforced && !gate.passed) {
+        await this.audit(requestId, "task.execute.start.implementation-plan-gate-failed", "codex", "OK", {
+          sessionAlias,
+          evaluatedPaths: gate.evaluatedPaths,
+          failedPaths: gate.failedPaths,
+          missingSections: gate.missingSections
+        });
+        return makeResult(
+          requestId,
+          this.buildImplementationPlanGateNeedsInputResponse(sessionAlias, taskId, developmentDecision, gate)
+        );
+      }
     }
 
     const designPlanningExecutor = this.resolveDesignPlanningExecutor(input);
@@ -1792,6 +1846,145 @@ export class BridgeService {
         }
       ]
     };
+  }
+
+  private buildImplementationPlanGateNeedsInputResponse(
+    sessionAlias: string,
+    taskId: string,
+    developmentDecision: DevelopmentTypeDecision,
+    gate: ImplementationPlanningGateResult
+  ): Record<string, unknown> {
+    const evidence = [
+      `实施入口前置门禁已执行，已校验计划文档 ${gate.evaluatedPaths.length} 份。`,
+      ...gate.evaluatedPaths.map((path) => `已校验计划文档：${path}`),
+      ...gate.failedPaths.map((path) => `计划文档读取失败：${path}`)
+    ];
+    return {
+      task_id: taskId,
+      session_alias: sessionAlias,
+      workflow_status: "NEEDS_USER_INPUT",
+      current_stage: "NEEDS_USER_INPUT",
+      next_action_required: ["provide_context_then_restart"],
+      business_stage: "计划修订",
+      business_reason: "当前提供的计划文档不满足实施门禁，必须先补齐缺项后才能进入实施。",
+      next_business_action: "请先修订计划文档并补齐缺项，再重新发起 start 进入实施阶段。",
+      user_message: "计划文档还不满足实施要求。我已列出缺项，请先修订计划文档，确认后再进入实施。",
+      detected_start_phase: "implementation",
+      detection_evidence: evidence,
+      ...this.toDevelopmentDecisionPayload(developmentDecision),
+      missing_context: ["请先修订计划文档并补齐缺项后再重试 implementation start。"],
+      missing_sections: gate.missingSections
+    };
+  }
+
+  private async evaluateImplementationPlanningGate(
+    workspacePath: string,
+    requirementText: string,
+    developmentType: DevelopmentType
+  ): Promise<ImplementationPlanningGateResult> {
+    const candidatePaths = this.extractMarkdownPaths(requirementText, workspacePath);
+    const likelyPlanPathCandidates = candidatePaths.filter((path) => {
+      const lowerPath = path.toLowerCase();
+      return lowerPath.includes("plan") || path.includes("计划");
+    });
+    if (candidatePaths.length === 0) {
+      return {
+        enforced: false,
+        passed: true,
+        missingSections: [],
+        evaluatedPaths: [],
+        failedPaths: []
+      };
+    }
+
+    const documents: Array<{ path: string; content: string }> = [];
+    const failedPaths: string[] = [];
+    for (const path of candidatePaths.slice(0, 5)) {
+      try {
+        const content = await readFile(path, "utf8");
+        if (content.trim().length === 0) {
+          failedPaths.push(path);
+          continue;
+        }
+        documents.push({ path, content });
+      } catch {
+        failedPaths.push(path);
+      }
+    }
+
+    const likelyPlanDocuments = documents.filter(({ path, content }) =>
+      this.isLikelyPlanningDocument(path, content)
+    );
+    if (likelyPlanDocuments.length === 0 && likelyPlanPathCandidates.length > 0) {
+      return {
+        enforced: true,
+        passed: false,
+        missingSections: ["计划文档文件不可读取，或内容无法识别为计划文档，请确认路径与文件内容"],
+        evaluatedPaths: [],
+        failedPaths
+      };
+    }
+    if (likelyPlanDocuments.length === 0) {
+      return {
+        enforced: false,
+        passed: true,
+        missingSections: [],
+        evaluatedPaths: [],
+        failedPaths
+      };
+    }
+
+    const requiredSections = DOCUMENT_PROFILES[developmentType].planningRequiredSections;
+    const missingSections: string[] = [];
+    const evaluatedPaths: string[] = [];
+    for (const document of likelyPlanDocuments) {
+      const evaluation = await this.evaluateRequiredSections(
+        {
+          request_id: "implementation-plan-gate",
+          success: true,
+          data: {
+            summary: document.content
+          }
+        },
+        requiredSections
+      );
+      evaluatedPaths.push(document.path);
+      if (!evaluation.passed) {
+        missingSections.push(
+          ...evaluation.missingSections.map((item) => `${basename(document.path)}: ${item}`)
+        );
+      }
+    }
+
+    if (missingSections.length > 0) {
+      return {
+        enforced: true,
+        passed: false,
+        missingSections,
+        evaluatedPaths,
+        failedPaths
+      };
+    }
+
+    return {
+      enforced: true,
+      passed: true,
+      missingSections: [],
+      evaluatedPaths,
+      failedPaths
+    };
+  }
+
+  private isLikelyPlanningDocument(path: string, content: string): boolean {
+    const lowerPath = path.toLowerCase();
+    if (lowerPath.includes("plan") || path.includes("计划")) {
+      return true;
+    }
+    const sections = this.parseSecondLevelSections(content);
+    return (
+      sections.some((section) => this.headingContains(section, "项目与目标")) ||
+      sections.some((section) => this.headingContains(section, "bug与设计来源"))
+    );
   }
 
   private buildPlanningSourcePayload(
