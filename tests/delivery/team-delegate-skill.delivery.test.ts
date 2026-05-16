@@ -71,6 +71,11 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("补充类判定");
     expect(skill).toContain("修订同一份文档并再次发起确认");
     expect(skill).toContain("直到用户给出确认类回复");
+    expect(skill).toContain("必须在原文档上增量修订");
+    expect(skill).toContain("绝对禁止重写整篇文档");
+    expect(skill).toContain("禁止通过新建“v2/新版”文档替代原文档");
+    expect(skill).toContain("保持同一路径文件不变");
+    expect(skill).toContain("保留已确认内容与章节结构");
   });
 
   it("must require timeout-default decisions to preserve user choice and reset counts correctly", async () => {
