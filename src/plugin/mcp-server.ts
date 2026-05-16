@@ -80,6 +80,20 @@ async function main(): Promise<void> {
       inputSchema: z.object({
         workspace_path: z.string(),
         requirement_text: z.string(),
+        requirements_package: z
+          .object({
+            objective: z.string(),
+            user_ideas: z.array(z.string()),
+            business_scenarios: z.array(z.string()),
+            in_scope: z.array(z.string()),
+            out_of_scope: z.array(z.string()),
+            constraints: z.array(z.string()),
+            acceptance_criteria: z.array(z.string()),
+            risks: z.array(z.string()),
+            open_questions: z.array(z.string()).optional(),
+            source: z.string().optional()
+          })
+          .optional(),
         task_id: z.string().optional(),
         session_alias: z.string().optional(),
         design_planning_executor: z.enum(["main", "acp"]).optional(),

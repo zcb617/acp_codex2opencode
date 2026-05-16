@@ -44,6 +44,17 @@ const PLANNING_SECTIONS_TEXT = [
   "最终交付清单"
 ].join("\n");
 
+const REQUIREMENT_MINING_PACKAGE = {
+  objective: "完成委派插件的需求深挖与后续文档闭环",
+  user_ideas: ["先目标对齐，再深挖需求，最后再做方案和计划"],
+  business_scenarios: ["用户只给一句话需求时，系统仍能收敛为可执行输入"],
+  in_scope: ["需求挖掘门禁", "结构化需求包输入"],
+  out_of_scope: ["修改 ACP 协议本身"],
+  constraints: ["不能依赖第三方 skill 才能运行", "必须保持现有设计/计划审批门禁"],
+  acceptance_criteria: ["未完成需求深挖时不能进入 design/planning"],
+  risks: ["用户绕开同一 task_id 重新起任务可能跳过门禁"]
+};
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -65,6 +76,7 @@ function mockBridgeService(options?: {
   );
 
   const hacked = service as unknown as Record<string, unknown>;
+  const pendingStartByKey = new Map<string, Record<string, unknown>>();
   hacked.audit = vi.fn(async () => undefined);
   hacked.initSession = vi.fn(async () => ({
     request_id: "req_init",
@@ -115,6 +127,23 @@ function mockBridgeService(options?: {
   ]);
   hacked.readWorkspacePreferredModel = vi.fn(async () => "llm-router-openai-compatible/kimi-for-roo");
   hacked.saveWorkspacePreferredModel = vi.fn(async () => undefined);
+  hacked.cachePendingStartInput = vi.fn(
+    async (workflowKey: string, input: Record<string, unknown>, sessionAlias: string, taskId: string) => {
+      pendingStartByKey.set(workflowKey, {
+        ...input,
+        session_alias: sessionAlias,
+        task_id: taskId,
+        action: "start"
+      });
+    }
+  );
+  hacked.clearPendingStartInput = vi.fn(async (workflowKey: string) => {
+    pendingStartByKey.delete(workflowKey);
+  });
+  hacked.resolveEffectiveStartInput = vi.fn(async (workflowKey: string, input: Record<string, unknown>) => {
+    return (pendingStartByKey.get(workflowKey) as Record<string, unknown> | undefined) ?? input;
+  });
+  hacked.ensureWorkflowRuntimeContext = vi.fn(async () => undefined);
   return service;
 }
 
@@ -130,6 +159,7 @@ function mockBridgeServiceWithRuntimeDefaults(): BridgeService {
   );
 
   const hacked = service as unknown as Record<string, unknown>;
+  const pendingStartByKey = new Map<string, Record<string, unknown>>();
   hacked.initSession = vi.fn(async () => ({
     request_id: "req_init",
     success: true,
@@ -144,6 +174,23 @@ function mockBridgeServiceWithRuntimeDefaults(): BridgeService {
   hacked.setWorkflowAgentMode = vi.fn(async (workflow: Record<string, unknown>, mode: string) => {
     workflow.activeAgentMode = mode;
   });
+  hacked.cachePendingStartInput = vi.fn(
+    async (workflowKey: string, input: Record<string, unknown>, sessionAlias: string, taskId: string) => {
+      pendingStartByKey.set(workflowKey, {
+        ...input,
+        session_alias: sessionAlias,
+        task_id: taskId,
+        action: "start"
+      });
+    }
+  );
+  hacked.clearPendingStartInput = vi.fn(async (workflowKey: string) => {
+    pendingStartByKey.delete(workflowKey);
+  });
+  hacked.resolveEffectiveStartInput = vi.fn(async (workflowKey: string, input: Record<string, unknown>) => {
+    return (pendingStartByKey.get(workflowKey) as Record<string, unknown> | undefined) ?? input;
+  });
+  hacked.ensureWorkflowRuntimeContext = vi.fn(async () => undefined);
   return service;
 }
 
@@ -168,12 +215,14 @@ async function startAndConfirmModel(
   expect(start.success).toBe(true);
   expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
 
-  return service.executeTask({
+  const confirmed = await service.executeTask({
     development_type: "feature",
     ...input,
     action: "model_confirm",
     model_confirm_choice: "use_saved_model"
   });
+  expect(confirmed.success).toBe(true);
+  return confirmed;
 }
 
 describe("bridge workflow approvals", () => {
@@ -560,7 +609,7 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-004");
+    const workflow = workflowByKey.get("d:/repo::task-004");
     expect(workflow).toBeDefined();
     workflow!.silenceDecisionMs = 1_000;
     workflow!.lastProgressAtMs = Date.now() - 10_000;
@@ -627,7 +676,7 @@ describe("bridge workflow approvals", () => {
     expect(start.success).toBe(true);
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-timeout-default-limit");
+    const workflow = workflowByKey.get("d:/repo::task-timeout-default-limit");
     expect(workflow).toBeDefined();
     workflow!.silenceDecisionMs = 1;
 
@@ -719,7 +768,7 @@ describe("bridge workflow approvals", () => {
     });
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-user-selection-clears-timeout-defaults");
+    const workflow = workflowByKey.get("d:/repo::task-user-selection-clears-timeout-defaults");
     expect(workflow).toBeDefined();
     workflow!.silenceDecisionMs = 1;
     workflow!.lastProgressAtMs = Date.now() - 10_000;
@@ -790,7 +839,7 @@ describe("bridge workflow approvals", () => {
     });
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-progress-clears-timeout-defaults");
+    const workflow = workflowByKey.get("d:/repo::task-progress-clears-timeout-defaults");
     expect(workflow).toBeDefined();
     workflow!.silenceDecisionMs = 1;
     workflow!.consecutiveTimeoutDefaultContinueCount = 2;
@@ -844,7 +893,7 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-recover-waiting");
+    const workflow = workflowByKey.get("d:/repo::task-recover-waiting");
     expect(workflow).toBeDefined();
     workflow!.silenceDecisionMs = 1_000;
     workflow!.lastProgressAtMs = Date.now() - 10_000;
@@ -861,6 +910,10 @@ describe("bridge workflow approvals", () => {
 
     const restoredService = mockBridgeService({ workflowSyncWaitMs: 5, stateDir });
     await restoredService.init();
+    (restoredService as unknown as { ensureWorkflowRuntimeContext: ReturnType<typeof vi.fn> }).ensureWorkflowRuntimeContext =
+      vi.fn(async (wf: Record<string, unknown>) => {
+        wf.stage = "NEEDS_ACP_SESSION_DECISION";
+      });
     const continued = await restoredService.executeTask({
       workspace_path: "D:/repo",
       requirement_text: START_FROM_DESIGN_REQUIREMENT,
@@ -905,7 +958,7 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { workflow_status: string }).workflow_status).toBe("RUNNING_DESIGN");
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-progress-001");
+    const workflow = workflowByKey.get("d:/repo::task-progress-001");
     expect(workflow).toBeDefined();
     workflow!.silenceDecisionMs = 10;
     workflow!.lastProgressAtMs = Date.now() - 1_000;
@@ -949,7 +1002,7 @@ describe("bridge workflow approvals", () => {
     expect(start.success).toBe(true);
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-progress-002");
+    const workflow = workflowByKey.get("d:/repo::task-progress-002");
     expect(workflow).toBeDefined();
     workflow!.silenceDecisionMs = 10;
     workflow!.lastProgressAtMs = Date.now() - 1_000;
@@ -988,7 +1041,7 @@ describe("bridge workflow approvals", () => {
     });
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-decision-deadline-001");
+    const workflow = workflowByKey.get("d:/repo::task-decision-deadline-001");
     expect(workflow).toBeDefined();
     workflow!.silenceDecisionMs = 10;
     workflow!.lastProgressAtMs = Date.now() - 1_000;
@@ -1041,7 +1094,7 @@ describe("bridge workflow approvals", () => {
     });
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-auto-continue-after-timeout");
+    const workflow = workflowByKey.get("d:/repo::task-auto-continue-after-timeout");
     expect(workflow).toBeDefined();
     workflow!.silenceDecisionMs = 1;
     workflow!.lastProgressAtMs = Date.now() - 10_000;
@@ -1107,7 +1160,7 @@ describe("bridge workflow approvals", () => {
     });
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-progress-003");
+    const workflow = workflowByKey.get("d:/repo::task-progress-003");
     expect(workflow).toBeDefined();
     workflow!.stage = "NEEDS_USER_DECISION";
     workflow!.activePhase = "design";
@@ -1148,7 +1201,7 @@ describe("bridge workflow approvals", () => {
       design_planning_executor: "acp"
     });
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-progress-004");
+    const workflow = workflowByKey.get("d:/repo::task-progress-004");
     expect(workflow).toBeDefined();
     workflow!.nextPollDueAtMs = Date.now() - 1;
 
@@ -1195,7 +1248,7 @@ describe("bridge workflow approvals", () => {
     });
 
     const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
-    const workflow = workflowByKey.get("D:/repo::task-follow-up-gate");
+    const workflow = workflowByKey.get("d:/repo::task-follow-up-gate");
     expect(workflow).toBeDefined();
     workflow!.nextPollDueAtMs = Date.now() + 45;
 
@@ -1229,8 +1282,54 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { next_action_required: string[] }).next_action_required).toEqual([
       "provide_context_then_restart"
     ]);
-    expect((start.data as { user_message: string }).user_message).toContain("ian-think");
-    expect((start.data as { user_message: string }).user_message).toContain("需求挖掘");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("ian-think");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("需求挖掘");
+    expect((start.data as { requirement_mining: { status: string } }).requirement_mining.status).toBe("required");
+  });
+
+  it("should enforce requirement mining package before allowing design after ian-think entry", async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 20 });
+
+    const firstStart = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "一句话需求：帮我把插件优化到可交付。",
+      session_alias: "task-requirement-mining-gate",
+      action: "start",
+      start_phase: "need_user_input",
+      start_phase_evidence: ["mock-detection:one-sentence-requirement"],
+      missing_context: ["设计来源", "业务边界"],
+      development_type: "feature"
+    });
+    expect(firstStart.success).toBe(true);
+    expect((firstStart.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
+
+    const blockedStart = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "现在进入方案阶段。",
+      session_alias: "task-requirement-mining-gate",
+      action: "start",
+      start_phase: "design",
+      development_type: "feature"
+    });
+    expect(blockedStart.success).toBe(true);
+    expect((blockedStart.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
+    expect((blockedStart.data as { business_stage: string }).business_stage).toBe("需求深挖");
+    expect((blockedStart.data as { missing_context: string[] }).missing_context).toContain(
+      "requirements_package.objective"
+    );
+
+    const passedStart = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求深挖完成，进入方案制定。",
+      requirements_package: REQUIREMENT_MINING_PACKAGE,
+      session_alias: "task-requirement-mining-gate",
+      action: "start",
+      start_phase: "design",
+      start_phase_reason: "需求深挖已完成，开始方案制定。",
+      development_type: "feature"
+    });
+    expect(passedStart.success).toBe(true);
+    expect((passedStart.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_DESIGN");
   });
 
   it("should not call ACP stage detection when start_phase is missing", async () => {
@@ -1743,7 +1842,7 @@ describe("bridge workflow approvals", () => {
         }) => Promise<void>;
       };
     }).store;
-    const oldKey = "D:/repo::old-expired-task";
+    const oldKey = "d:/repo::old-expired-task";
     const oldWorkflow = await store.findWorkflowByKey(oldKey);
     expect(oldWorkflow).toBeDefined();
     await store.saveWorkflow({
@@ -1990,5 +2089,262 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_PLANNING");
     expect((start.data as { default_option: string }).default_option).toBe("1");
     expect(hacked.initSession).not.toHaveBeenCalled();
+  });
+  it('UT-01: should return progress_update.summary when ACP has new output', async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(50);
+      workflow.stage = 'WAITING_DESIGN_APPROVAL';
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: true,
+      text: 'Completed initial modifications, now running tests.',
+      summary: 'Completed initial modifications, now running tests.',
+      summaryTruncated: false,
+      eventCount: 1
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-001',
+      start_phase: 'design',
+      design_planning_executor: 'acp'
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get('d:/repo::ut-001');
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10;
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-001',
+      action: 'status'
+    });
+
+    expect(status.success).toBe(true);
+    const pu = (status.data as { progress_update: { has_new_output: boolean; summary: string } }).progress_update;
+    expect(pu.has_new_output).toBe(true);
+    expect(pu.summary).toBeDefined();
+    expect(typeof pu.summary).toBe('string');
+    expect(pu.summary.length).toBeGreaterThan(0);
+  });
+
+  it('UT-02: summary should be concise and summary_truncated should reflect length', async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(50);
+      workflow.stage = 'WAITING_DESIGN_APPROVAL';
+    });
+    const longLine = 'A'.repeat(500);
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: true,
+      text: longLine,
+      summary: longLine.slice(0, 300),
+      summaryTruncated: true,
+      eventCount: 1
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-002',
+      start_phase: 'design',
+      design_planning_executor: 'acp'
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get('d:/repo::ut-002');
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10;
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-002',
+      action: 'status'
+    });
+
+    expect(status.success).toBe(true);
+    const pu = (status.data as { progress_update: { summary: string; summary_truncated: boolean } }).progress_update;
+    expect(pu.summary.length).toBeLessThanOrEqual(300);
+    expect(pu.summary_truncated).toBe(true);
+  });
+
+  it('UT-03: should stay RUNNING_* when silence is below threshold', async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(50);
+      workflow.stage = 'WAITING_DESIGN_APPROVAL';
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: '',
+      eventCount: 0
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-003',
+      start_phase: 'design',
+      design_planning_executor: 'acp'
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get('d:/repo::ut-003');
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10_000;
+    workflow!.lastProgressAtMs = Date.now() - 100;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-003',
+      action: 'status'
+    });
+
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe('RUNNING_DESIGN');
+    const nar = (status.data as { next_action_required: string[] }).next_action_required;
+    expect(nar).not.toContain('continue_wait');
+    expect(nar).not.toContain('handoff_to_main');
+  });
+
+  it('UT-04: should enter NEEDS_USER_DECISION when silence exceeds threshold', async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(50);
+      workflow.stage = 'WAITING_DESIGN_APPROVAL';
+    });
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: '',
+      eventCount: 0
+    }));
+
+    await startAndConfirmModel(service, {
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-004',
+      start_phase: 'design',
+      design_planning_executor: 'acp'
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get('d:/repo::ut-004');
+    expect(workflow).toBeDefined();
+    workflow!.silenceDecisionMs = 10;
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const status = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-004',
+      action: 'status'
+    });
+
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe('NEEDS_USER_DECISION');
+    expect((status.data as { next_action_required: string[] }).next_action_required).toEqual([
+      'continue_wait',
+      'handoff_to_main'
+    ]);
+  });
+
+  it('UT-05: should clear user-decision window and resume RUNNING when new progress appears after decision', async () => {
+    const service = mockBridgeService({ workflowSyncWaitMs: 5 });
+    const hacked = service as unknown as Record<string, unknown>;
+    hacked.runDesignPhase = vi.fn(async (workflow: Record<string, unknown>) => {
+      await sleep(50);
+      workflow.stage = 'WAITING_DESIGN_APPROVAL';
+    });
+
+    await startAndConfirmModel(service, {
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-005',
+      start_phase: 'design',
+      design_planning_executor: 'acp'
+    });
+
+    const workflowByKey = hacked.workflowByKey as Map<string, Record<string, unknown>>;
+    const workflow = workflowByKey.get('d:/repo::ut-005');
+    expect(workflow).toBeDefined();
+
+    // First: reach NEEDS_USER_DECISION with no new output
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: false,
+      text: '',
+      eventCount: 0
+    }));
+    workflow!.silenceDecisionMs = 1;
+    workflow!.lastProgressAtMs = Date.now() - 10_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const decision = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-005',
+      action: 'status'
+    });
+    expect(decision.success).toBe(true);
+    expect((decision.data as { workflow_status: string }).workflow_status).toBe('NEEDS_USER_DECISION');
+    expect(workflow!.userDecisionPromptedAtMs).toBeDefined();
+
+    // User chooses continue_wait
+    const cont = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-005',
+      action: 'continue_wait'
+    });
+    expect(cont.success).toBe(true);
+    expect((cont.data as { workflow_status: string }).workflow_status).toBe('RUNNING_DESIGN');
+
+    // Next poll: new output appears
+    hacked.collectWorkflowProgressDelta = vi.fn(async () => ({
+      hasNewOutput: true,
+      text: 'Progress resumed, continuing work.',
+      summary: 'Progress resumed, continuing work.',
+      summaryTruncated: false,
+      eventCount: 1
+    }));
+    workflow!.lastProgressAtMs = Date.now() - 1_000;
+    workflow!.nextPollDueAtMs = Date.now() - 1;
+
+    const resumed = await service.executeTask({
+      workspace_path: 'D:/repo',
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: 'ut-005',
+      action: 'status'
+    });
+    expect(resumed.success).toBe(true);
+    expect((resumed.data as { workflow_status: string }).workflow_status).toBe('RUNNING_DESIGN');
+    expect(workflow!.userDecisionPromptedAtMs).toBeUndefined();
+    expect(workflow!.consecutiveTimeoutDefaultContinueCount).toBe(0);
+    const pu = (resumed.data as { progress_update: { has_new_output: boolean; summary: string } }).progress_update;
+    expect(pu.has_new_output).toBe(true);
+    expect(pu.summary.length).toBeGreaterThan(0);
+  });
+
+  it('UT-06: skill doc should mention summary usage for concise progress reporting', async () => {
+    const fsMod = await import('node:fs/promises');
+    const skillText = await fsMod.readFile('skills/team-delegate/SKILL.md', 'utf8');
+    expect(skillText).toContain('简短进展总结');
+    expect(skillText).toContain('不粘贴完整原始过程');
+    expect(skillText).toContain('继续等待，不询问是否接手');
   });
 });

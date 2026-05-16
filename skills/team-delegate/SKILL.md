@@ -133,9 +133,10 @@ digraph team_delegate_flow {
    - 输入仅为“方法论文档/参考资料 + 一句话目标”。
    - 缺少最小业务信息（明确业务目标、边界、成功标准、约束、优先级）中的关键项。
    - 主会话无法稳定判定阶段或开发类型。
-3. 用户选择进入 `ian-think` 时，先完成需求挖掘并沉淀结构化结果，再回到 `action=start`。
-4. 用户不进入 `ian-think` 时，要求其直接补充上下文（文档内容或文档路径），再重新 `action=start`。
-5. 不进入本地开发。
+3. 用户选择进入 `ian-think` 时，必须先完成“目标对齐”；目标对齐后还必须进入深度需求挖掘（优先 `brainstorming`，不可用则主会话按同结构兜底）。
+4. 深度需求挖掘完成后，必须回填 `requirements_package`（`objective`、`user_ideas`、`business_scenarios`、`in_scope`、`out_of_scope`、`constraints`、`acceptance_criteria`、`risks`），缺任一项都不得进入 `design/planning`。
+5. 用户不进入 `ian-think` 时，要求其直接补充上下文（文档内容或文档路径），再重新 `action=start`。
+6. 不进入本地开发。
 
 反例（必须判为 `need_user_input`，禁止直接进入 `design`）：
 
