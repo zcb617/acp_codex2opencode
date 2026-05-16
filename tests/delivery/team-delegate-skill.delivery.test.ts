@@ -61,6 +61,18 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("不得另造方案");
   });
 
+  it("must enforce confirmation loops for main-session design and planning docs", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("方案确认");
+    expect(skill).toContain("计划确认");
+    expect(skill).toContain("如无补充请回复“可以/同意/确认”");
+    expect(skill).toContain("确认类判定");
+    expect(skill).toContain("补充类判定");
+    expect(skill).toContain("修订同一份文档并再次发起确认");
+    expect(skill).toContain("直到用户给出确认类回复");
+  });
+
   it("must require timeout-default decisions to preserve user choice and reset counts correctly", async () => {
     const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
 
