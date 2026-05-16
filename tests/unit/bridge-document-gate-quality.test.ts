@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createLogger } from "../../src/observability/logger.js";
 import { MetricsRegistry } from "../../src/observability/metrics.js";
 import { BridgeService } from "../../src/session/bridge-service.js";
@@ -152,5 +154,34 @@ describe("document gate quality checks", () => {
     expect(result.passed).toBe(true);
     expect(result.missingSections).toEqual([]);
   });
-});
 
+  it("should reject the real erp ai adapter plan that misses strict task-gate structure", async () => {
+    const service = createService();
+    const hacked = service as unknown as {
+      collectTurnOutputText: (turnId: string | undefined, summary: string) => Promise<string>;
+      evaluateRequiredSections: (
+        result: { success: boolean; data: { turn_id: string; summary: string } },
+        requiredSections: string[],
+        outputDocumentPath?: string
+      ) => Promise<{ passed: boolean; missingSections: string[] }>;
+    };
+
+    const realPlanPath = join(process.cwd(), "tests", "2026-05-16-erp-ai-adapter-enhancement-plan.md");
+    const realPlan = await readFile(realPlanPath, "utf8");
+    hacked.collectTurnOutputText = vi.fn(async () => realPlan);
+
+    const result = await hacked.evaluateRequiredSections(
+      {
+        success: true,
+        data: {
+          turn_id: "turn_real_plan_gate",
+          summary: realPlan
+        }
+      },
+      ["API、数据模型与配置", "开发任务拆分"]
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.missingSections).toContain("开发任务拆分章节缺少 Task 明细（至少一个 `### Task XX`）");
+  });
+});
