@@ -119,6 +119,7 @@ describe("document gate quality checks", () => {
     const summary = [
       "## 9. API、数据模型与配置",
       "### delegate_task_execute(action=start)",
+      "- 接口示例：POST /sys/ai/sale/order/draft",
       "- 请求方法：MCP Tool 调用（action=start）",
       "- 路径：delegate_task_execute",
       "- 入参：workspace_path, requirement_text, session_alias, start_phase, development_type",
@@ -132,6 +133,7 @@ describe("document gate quality checks", () => {
       "## 10. 开发任务拆分",
       "### Task 01: 增强计划文档门禁",
       "- 目标：拦截空壳计划文档。",
+      "- 设计来源：设计文档《计划门禁质量增强》中的 3.9/3.10 合规目标。",
       "- 文件范围：src/session/bridge-service.ts, tests/unit/bridge-document-gate-quality.test.ts",
       "- 实施步骤：1) 增加内容质量校验。2) 在门禁中接入质量校验。3) 新增单元测试。",
       "- 验证命令：npm run test:unit -- tests/unit/bridge-document-gate-quality.test.ts",

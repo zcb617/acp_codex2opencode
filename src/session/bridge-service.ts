@@ -4757,53 +4757,190 @@ export class BridgeService {
 
   private evaluateDocumentContentQuality(documentText: string): string[] {
     const issues: string[] = [];
+    const sections = this.parseSecondLevelSections(documentText);
+    const isFeaturePlan = sections.some((section) => this.headingContains(section, "项目与目标"));
+    const isBugfixPlan = sections.some((section) => this.headingContains(section, "bug与设计来源"));
 
-    const apiSection = this.extractSecondLevelSection(documentText, [
-      "api、数据模型与配置",
-      "api,数据模型与配置",
-      "api 数据模型与配置"
-    ]);
+    if (isFeaturePlan) {
+      issues.push(...this.validateFeaturePlanningSections(sections));
+    }
+    if (isBugfixPlan) {
+      issues.push(...this.validateBugfixPlanningSections(sections));
+    }
+
+    const apiSection = this.findSectionByKeywords(sections, ["api、数据模型与配置", "api,数据模型与配置", "api 数据模型与配置"]);
     if (apiSection) {
-      const missingApiFields = this.findMissingApiContractFields(apiSection);
+      const missingApiFields = this.findMissingApiContractFields(apiSection.body);
       if (missingApiFields.length > 0) {
         issues.push(`API、数据模型与配置章节缺少字段：${missingApiFields.join("、")}`);
       }
+      if (!/\b(get|post|put|delete|patch)\b\s*\/[a-z0-9/_\-{}:*]*/iu.test(apiSection.body)) {
+        issues.push("API、数据模型与配置章节缺少可执行 API 条目（例如 `POST /path`）");
+      }
     }
 
-    const taskSection = this.extractSecondLevelSection(documentText, ["开发任务拆分", "实施任务拆分"]);
+    const taskSection = this.findSectionByKeywords(sections, ["开发任务拆分", "实施任务拆分"]);
     if (taskSection) {
-      issues.push(...this.findTaskSectionIssues(taskSection));
+      issues.push(...this.findTaskSectionIssues(taskSection.body));
     }
 
     return issues;
   }
 
-  private extractSecondLevelSection(documentText: string, sectionNames: string[]): string | undefined {
+  private parseSecondLevelSections(
+    documentText: string
+  ): Array<{ heading: string; normalizedHeading: string; body: string }> {
     const lines = documentText.replace(/\r\n/g, "\n").split("\n");
-    const normalizedTargets = sectionNames.map((name) => this.normalizeForMatch(name));
-    const headings: Array<{ index: number; normalizedHeading: string }> = [];
+    const sections: Array<{ heading: string; normalizedHeading: string; body: string }> = [];
+    let inFence = false;
+    let current: { heading: string; normalizedHeading: string; bodyLines: string[] } | undefined;
 
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index];
-      if (!line.trimStart().startsWith("## ")) {
+    for (const line of lines) {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        if (current) {
+          current.bodyLines.push(line);
+        }
         continue;
       }
-      headings.push({
-        index,
-        normalizedHeading: this.normalizeForMatch(line)
+      if (!inFence && /^\s*##\s+/.test(line)) {
+        if (current) {
+          sections.push({
+            heading: current.heading,
+            normalizedHeading: current.normalizedHeading,
+            body: current.bodyLines.join("\n")
+          });
+        }
+        current = {
+          heading: line.trim(),
+          normalizedHeading: this.normalizeForMatch(line),
+          bodyLines: []
+        };
+        continue;
+      }
+      if (current) {
+        current.bodyLines.push(line);
+      }
+    }
+
+    if (current) {
+      sections.push({
+        heading: current.heading,
+        normalizedHeading: current.normalizedHeading,
+        body: current.bodyLines.join("\n")
       });
     }
+    return sections;
+  }
 
-    const hit = headings.find((heading) =>
-      normalizedTargets.some((target) => heading.normalizedHeading.includes(target))
-    );
-    if (!hit) {
-      return undefined;
+  private headingContains(section: { normalizedHeading: string }, keyword: string): boolean {
+    return section.normalizedHeading.includes(this.normalizeForMatch(keyword));
+  }
+
+  private findSectionByKeywords(
+    sections: Array<{ heading: string; normalizedHeading: string; body: string }>,
+    keywords: string[]
+  ): { heading: string; normalizedHeading: string; body: string } | undefined {
+    const normalizedTargets = keywords.map((name) => this.normalizeForMatch(name));
+    return sections.find((section) => normalizedTargets.some((target) => section.normalizedHeading.includes(target)));
+  }
+
+  private validateFeaturePlanningSections(
+    sections: Array<{ heading: string; normalizedHeading: string; body: string }>
+  ): string[] {
+    const issues: string[] = [];
+    const requiredSections: string[] = [
+      "项目与目标",
+      "硬约束",
+      "范围与非范围",
+      "交付完成定义",
+      "业务交付场景",
+      "自测命令",
+      "失败修复与复测机制",
+      "技术设计与模块边界",
+      "API、数据模型与配置",
+      "开发任务拆分",
+      "测试策略",
+      "需求到验收映射",
+      "最终交付清单"
+    ];
+
+    for (const sectionName of requiredSections) {
+      const section = this.findSectionByKeywords(sections, [sectionName]);
+      if (!section) {
+        issues.push(`缺少章节：${sectionName}`);
+      }
     }
 
-    const nextHeading = headings.find((heading) => heading.index > hit.index);
-    const endIndex = nextHeading ? nextHeading.index : lines.length;
-    return lines.slice(hit.index, endIndex).join("\n");
+    const selfTestSection = this.findSectionByKeywords(sections, ["自测命令"]);
+    if (selfTestSection) {
+      if (!/(npm|pnpm|yarn|mvn|gradle|go test|pytest|dotnet test|cargo test|bash|powershell|sh)/iu.test(selfTestSection.body)) {
+        issues.push("自测命令章节缺少可执行命令");
+      }
+      if (!this.normalizeForMatch(selfTestSection.body).includes(this.normalizeForMatch("通过标准"))) {
+        issues.push("自测命令章节缺少通过标准");
+      }
+    }
+
+    const failureSection = this.findSectionByKeywords(sections, ["失败修复与复测机制"]);
+    if (failureSection) {
+      const requiredFailureFields = [
+        "失败场景",
+        "输入数据",
+        "期望结果",
+        "实际结果",
+        "根因分析",
+        "修复方案",
+        "复测命令",
+        "复测结果"
+      ];
+      const normalizedFailure = this.normalizeForMatch(failureSection.body);
+      const missingFailureFields = requiredFailureFields.filter(
+        (field) => !normalizedFailure.includes(this.normalizeForMatch(field))
+      );
+      if (missingFailureFields.length > 0) {
+        issues.push(`失败修复与复测机制章节缺少字段：${missingFailureFields.join("、")}`);
+      }
+    }
+
+    const mappingSection = this.findSectionByKeywords(sections, ["需求到验收映射"]);
+    if (mappingSection) {
+      const normalizedMapping = this.normalizeForMatch(mappingSection.body);
+      const missingHeaders = ["需求", "开发任务", "验收场景", "自动化验证"].filter(
+        (field) => !normalizedMapping.includes(this.normalizeForMatch(field))
+      );
+      if (missingHeaders.length > 0) {
+        issues.push(`需求到验收映射章节缺少列：${missingHeaders.join("、")}`);
+      }
+    }
+
+    return issues;
+  }
+
+  private validateBugfixPlanningSections(
+    sections: Array<{ heading: string; normalizedHeading: string; body: string }>
+  ): string[] {
+    const issues: string[] = [];
+    const requiredSections: string[] = [
+      "Bug 与设计来源",
+      "设计目标覆盖表",
+      "实施任务拆分",
+      "TDD 与红灯测试计划",
+      "自动化验证计划",
+      "真实业务交付测试计划",
+      "交付测试失败整改记录",
+      "设计完成核对清单",
+      "上下文恢复说明"
+    ];
+
+    for (const sectionName of requiredSections) {
+      const section = this.findSectionByKeywords(sections, [sectionName]);
+      if (!section) {
+        issues.push(`缺少章节：${sectionName}`);
+      }
+    }
+
+    return issues;
   }
 
   private findMissingApiContractFields(sectionText: string): string[] {
@@ -4851,6 +4988,7 @@ export class BridgeService {
 
       const rules: Array<{ label: string; tokens: string[] }> = [
         { label: "目标", tokens: ["目标"] },
+        { label: "设计来源", tokens: ["设计来源", "来源设计", "设计目标覆盖"] },
         { label: "文件范围", tokens: ["文件", "涉及文件", "修改文件", "新增文件"] },
         { label: "实施步骤", tokens: ["实施步骤", "步骤"] },
         { label: "验证命令", tokens: ["验证命令", "验证"] },
