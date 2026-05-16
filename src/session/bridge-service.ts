@@ -1699,9 +1699,10 @@ export class BridgeService {
       next_action_required: ["provide_context_then_restart"],
       business_stage: "上下文补充",
       business_reason: "当前信息还不足以判断应进入哪个业务阶段，或无法判断这是新增功能还是 BUG 修改。",
-      next_business_action: "补充缺失上下文后重新判断业务阶段和开发类型",
+      next_business_action:
+        "请先选择是否进入 ian-think 需求挖掘；若不进入，请直接补充缺失上下文后重新判断业务阶段和开发类型",
       user_message:
-        "当前信息还不足以判断下一步业务阶段或开发类型。请先补充缺失的方案、计划、实施约定，或明确这是新增功能还是 BUG 修改。",
+        "当前信息还不足以进入下一步。你可以先进入 ian-think 做需求挖掘（适合一句话或模糊需求），也可以直接补充缺失的方案、计划、实施约定，或明确这是新增功能还是 BUG 修改。",
       detected_start_phase: null,
       detection_evidence: startDecision.evidence,
       ...developmentTypePayload,

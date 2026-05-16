@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 
 const PLUGIN_NAME = "acp-codex2opencode";
 const MARKETPLACE_NAME = "acp-local";
-const SKILL_NAME = "team-delegate";
+const SKILL_NAMES = ["team-delegate", "ian-think"];
 const MCP_SERVER_ID = "acp_codex2opencode_plugin";
 
 function runIgnoreError(command, args, cwd) {
@@ -69,7 +69,7 @@ async function main() {
   const projectRoot = path.resolve(scriptDir, "..");
   const marketplaceRoot = path.join(os.homedir(), ".codex-local", "acp-marketplace");
   const codexConfigPath = path.join(os.homedir(), ".codex", "config.toml");
-  const codexSkillDir = path.join(os.homedir(), ".codex", "skills", SKILL_NAME);
+  const codexSkillRoot = path.join(os.homedir(), ".codex", "skills");
   const pluginRef = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
 
   console.log("[A/5] 禁用并移除 marketplace 注册...");
@@ -94,8 +94,10 @@ async function main() {
     await writeFile(codexConfigPath, updatedConfig, "utf8");
   }
 
-  console.log("[D/5] 清理全局 team-delegate 技能...");
-  await rm(codexSkillDir, { recursive: true, force: true });
+  console.log("[D/5] 清理全局 team-delegate 与 ian-think 技能...");
+  for (const skillName of SKILL_NAMES) {
+    await rm(path.join(codexSkillRoot, skillName), { recursive: true, force: true });
+  }
 
   console.log("[E/5] 完成。请重启 Codex。");
   console.log("UNINSTALL-COMPLETED");

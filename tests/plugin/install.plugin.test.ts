@@ -9,6 +9,7 @@ const guideFiles = [
   "可交付BUG修改设计文档编写指南-v0.1.md",
   "可交付BUG修改计划编写指南-v0.1.md"
 ];
+const ianThinkSceneFiles = ["产品设计.md", "复制对标.md", "内容创作.md", "选择赛道.md", "营销成交.md", "skill.md"];
 
 const universalDeliveryRequirements = [
   "项目类型只决定",
@@ -107,6 +108,13 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("交付测试失败必须由主会话制定整改方案和整改计划");
     expect(skill).toContain("必须把完整整改方案和整改计划放入 `feedback_text`");
     expect(skill).toContain("ACP 只执行整改实施");
+    expect(skill).toContain("询问用户是否进入 `ian-think` 需求挖掘");
+    expect(skill).toContain("满足以下任一条件");
+    expect(skill).toContain("输入仅为“方法论文档/参考资料 + 一句话目标”");
+    expect(skill).toContain("缺少最小业务信息");
+    expect(skill).toContain("反例（必须判为 `need_user_input`");
+    expect(skill).toContain("我给你一个方法论，再补一句‘按这个思路加 AI 功能’。");
+    expect(skill).toContain("参考这份资料，帮我优化一下插件。");
     expect(skill).not.toContain("轮询");
     expect(skill).not.toContain("监控");
     expect(skill).not.toContain("沉默");
@@ -125,6 +133,15 @@ describe("PT-01 plugin install contract", () => {
       await expect(access(guidePath)).resolves.toBeUndefined();
       const guide = await readFile(guidePath, "utf8");
       expect(guide.trim().length).toBeGreaterThan(1000);
+    }
+  });
+
+  it("should package ian-think skill with all required scene files", async () => {
+    const ianThinkRoot = join(root, "skills", "ian-think");
+    await expect(access(join(ianThinkRoot, "SKILL.md"))).resolves.toBeUndefined();
+
+    for (const sceneFile of ianThinkSceneFiles) {
+      await expect(access(join(ianThinkRoot, "scenes", sceneFile))).resolves.toBeUndefined();
     }
   });
 

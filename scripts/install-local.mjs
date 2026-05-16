@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 const PLUGIN_NAME = "acp-codex2opencode";
 const MARKETPLACE_NAME = "acp-local";
 const MARKETPLACE_DISPLAY_NAME = "ACP Local Plugins";
-const SKILL_NAME = "team-delegate";
+const SKILL_NAMES = ["team-delegate", "ian-think"];
 const MCP_SERVER_ID = "acp_codex2opencode_plugin";
 const DEFAULT_WORKFLOW_MODEL = "llm-router-openai-compatible/kimi-for-roo";
 const GUIDE_FILES = [
@@ -18,6 +18,7 @@ const GUIDE_FILES = [
   "可交付BUG修改设计文档编写指南-v0.1.md",
   "可交付BUG修改计划编写指南-v0.1.md"
 ];
+const IAN_THINK_SCENE_FILES = ["产品设计.md", "复制对标.md", "内容创作.md", "选择赛道.md", "营销成交.md", "skill.md"];
 const DEFAULT_OPENCODE_CONFIG_CONTENT = JSON.stringify({
   permission: "allow",
   model: DEFAULT_WORKFLOW_MODEL
@@ -164,8 +165,10 @@ async function main() {
   const linkedPluginDir = path.join(marketplacePluginsDir, PLUGIN_NAME);
   const codexConfigPath = path.join(os.homedir(), ".codex", "config.toml");
   const codexSkillRoot = path.join(os.homedir(), ".codex", "skills");
-  const sourceSkillDir = path.join(projectRoot, "skills", SKILL_NAME);
-  const targetSkillDir = path.join(codexSkillRoot, SKILL_NAME);
+  const sourceTeamDelegateSkillDir = path.join(projectRoot, "skills", "team-delegate");
+  const sourceIanThinkSkillDir = path.join(projectRoot, "skills", "ian-think");
+  const targetTeamDelegateSkillDir = path.join(codexSkillRoot, "team-delegate");
+  const targetIanThinkSkillDir = path.join(codexSkillRoot, "ian-think");
   const mcpServerEntry = toTomlPath(path.join(projectRoot, "dist", "plugin", "mcp-server.js"));
   const bridgeStateDir = toTomlPath(path.join(os.homedir(), ".codex-local", "acp-bridge-runtime"));
   const bridgeLogDir = toTomlPath(path.join(bridgeStateDir, "logs"));
@@ -174,9 +177,13 @@ async function main() {
   console.log("[A/8] 检查前置条件...");
   await access(path.join(projectRoot, ".codex-plugin", "plugin.json"), constants.F_OK);
   await access(path.join(projectRoot, "package.json"), constants.F_OK);
-  await access(path.join(sourceSkillDir, "SKILL.md"), constants.F_OK);
+  await access(path.join(sourceTeamDelegateSkillDir, "SKILL.md"), constants.F_OK);
   for (const guideFile of GUIDE_FILES) {
-    await access(path.join(sourceSkillDir, "docs", guideFile), constants.F_OK);
+    await access(path.join(sourceTeamDelegateSkillDir, "docs", guideFile), constants.F_OK);
+  }
+  await access(path.join(sourceIanThinkSkillDir, "SKILL.md"), constants.F_OK);
+  for (const sceneFile of IAN_THINK_SCENE_FILES) {
+    await access(path.join(sourceIanThinkSkillDir, "scenes", sceneFile), constants.F_OK);
   }
 
   console.log("[B/8] 构建插件...");
@@ -232,17 +239,24 @@ async function main() {
   });
   await writeFile(codexConfigPath, mcpUpdatedConfig, "utf8");
 
-  console.log("[F/8] 安装 team-delegate 技能到全局目录...");
+  console.log("[F/8] 安装 team-delegate 与 ian-think 技能到全局目录...");
   await mkdir(codexSkillRoot, { recursive: true });
-  await rm(targetSkillDir, { recursive: true, force: true });
-  await cp(sourceSkillDir, targetSkillDir, { recursive: true });
+  for (const skillName of SKILL_NAMES) {
+    await rm(path.join(codexSkillRoot, skillName), { recursive: true, force: true });
+  }
+  await cp(sourceTeamDelegateSkillDir, targetTeamDelegateSkillDir, { recursive: true });
+  await cp(sourceIanThinkSkillDir, targetIanThinkSkillDir, { recursive: true });
 
   console.log("[G/8] 安装校验...");
   await access(path.join(projectRoot, "dist", "plugin", "mcp-server.js"), constants.F_OK);
   await access(marketplaceManifestPath, constants.F_OK);
-  await access(path.join(targetSkillDir, "SKILL.md"), constants.F_OK);
+  await access(path.join(targetTeamDelegateSkillDir, "SKILL.md"), constants.F_OK);
   for (const guideFile of GUIDE_FILES) {
-    await access(path.join(targetSkillDir, "docs", guideFile), constants.F_OK);
+    await access(path.join(targetTeamDelegateSkillDir, "docs", guideFile), constants.F_OK);
+  }
+  await access(path.join(targetIanThinkSkillDir, "SKILL.md"), constants.F_OK);
+  for (const sceneFile of IAN_THINK_SCENE_FILES) {
+    await access(path.join(targetIanThinkSkillDir, "scenes", sceneFile), constants.F_OK);
   }
 
   console.log("[H/8] 完成。请重启 Codex，然后在插件列表确认已启用。");
