@@ -81,7 +81,7 @@ Design / Planning 阶段必须读取本 skill 自带 `docs/` 目录里的对应�
 13. **实施完成不等于交付完成。** 计划实施完成后必须进入真实业务交付测试；只有交付测试通过后，才能向用户声明完成。
 14. **交付测试失败必须由主会话制定整改方案和整改计划。** 失败后主会话必须提交失败材料，并基于失败材料生成整改方案和整改计划；用户确认后，才调用 `remediation_approve` 把完整整改方案和整改计划交给 ACP 执行整改。ACP 不负责制定该方案。
 15. **ACP 整改次数固定为 3 次。** 整改次数由插件状态机控制，不能由 LLM 或调用参数决定；完成 3 次整改后仍未通过，只能由主会话接手整改或取消后续工作。
-16. **插件没有给继续等待选项时必须停步。** 如果 `next_action_required` 不包含 `continue_wait`，必须停止持续跟进，输出 `user_message` 和 `next_business_action`，等待用户选择插件给出的下一步。
+16. **停步规则只属于非运行态或不可继续等待场景。** 只要当前仍是 `RUNNING_*` / `RUNNING_REMEDIATION` 且 `next_action_required` 包含 `status`，主会话就必须继续按节奏持续跟进；只有进入非运行态，或 `NEEDS_USER_DECISION` 且 `next_action_required` 不包含 `continue_wait` 时，才停止持续跟进，输出 `user_message` 和 `next_business_action`，等待用户选择插件给出的下一步。
 17. **任务身份必须保持一致。** 插件返回 `task_id` 后，同一任务后续调用必须继续携带同一个 `task_id` 或原 `session_alias`；同一个 `task_id` 代表同一个任务闭环，不能静默启动新的 ACP 会话替换原执行上下文。
 
 ## 执行流程
@@ -189,7 +189,8 @@ digraph team_delegate_flow {
 7. 如果 `user_decision_policy.allow_timeout_default=false`，主会话必须停住等待用户明确选择；不得再用超时默认动作继续。
 8. 连续无人响应默认继续的计数只由 `decision_source=timeout_default` 增加；用户明确选择 `continue_wait` 或 ACP 返回任意新进展都会清空该计数。这和 ACP 反复无响应触发错误弹窗后的执行端重置不是同一个机制，禁止混用。
 9. 用户选择 `continue_wait` 后，进入新的持续跟进周期；等待过程中只要 ACP 又输出内容，就恢复进展总结并清空旧的接手询问。
-10. 如果 `NEEDS_USER_DECISION` 返回后，`next_action_required` 里没有 `continue_wait`，代表当前任务已经不能继续等待；必须停止持续跟进，禁止继续调用 `status`，并立刻输出 `user_message`，让用户选择插件给出的下一步。
+10. 运行态只要 `next_action_required` 里仍有 `status`，就继续持续跟进；不能因为没有 `continue_wait` 就提前停住。
+11. 如果 `NEEDS_USER_DECISION` 返回后，`next_action_required` 里没有 `continue_wait`，代表当前任务已经不能继续等待；必须停止持续跟进，禁止继续调用 `status`，并立刻输出 `user_message`，让用户选择插件给出的下一步。
 
 ### 5) `WAITING_DESIGN_APPROVAL`
 
@@ -339,7 +340,7 @@ digraph team_delegate_flow {
 
 禁止把 `workflow_status` / `current_stage` / `next_action_required` 放在面向用户输出的开头或作为主提示。只有用户要求调试、排障或查看内部状态时，才可以在业务说明之后补充这些字段。
 
-如果 next_action_required 不包含 continue_wait，必须停止持续跟进，输出 user_message，并等待用户选择插件返回的业务动作。
+如果当前仍是运行态且 next_action_required 包含 status，就必须继续持续跟进；只有进入非运行态，或 NEEDS_USER_DECISION 且 next_action_required 不包含 continue_wait，才停止持续跟进，输出 user_message，并等待用户选择插件返回的业务动作。
 
 ## 继续已委派任务
 

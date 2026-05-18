@@ -4331,6 +4331,9 @@ export class BridgeService {
       return {
         ...base,
         current_stage: "DESIGN_RUNNING",
+        business_stage: "方案制定",
+        user_message: "当前仍在方案制定阶段，我会按约定节奏继续跟进方案进展。",
+        next_business_action: "继续等待下一次方案进展；只有进入确认或用户决策阶段才停住",
         next_action_required: ["status"]
       };
     }
@@ -4345,6 +4348,9 @@ export class BridgeService {
       return {
         ...base,
         current_stage: "PLANNING_RUNNING",
+        business_stage: "计划制定",
+        user_message: "当前仍在计划制定阶段，我会按约定节奏继续跟进计划进展。",
+        next_business_action: "继续等待下一次计划进展；只有进入确认或用户决策阶段才停住",
         next_action_required: ["status"]
       };
     }
@@ -4359,6 +4365,9 @@ export class BridgeService {
       return {
         ...base,
         current_stage: "IMPLEMENTATION_RUNNING",
+        business_stage: "计划实施",
+        user_message: "当前仍在计划实施阶段，我会按 1-2 分钟节奏持续跟进实施进展；只要任务仍在运行，就不会提前停下。",
+        next_business_action: "继续等待下一次实施进展；只有长时间无进展进入用户决策，或离开运行态时才停住",
         next_action_required: ["status"]
       };
     }
@@ -4399,6 +4408,7 @@ export class BridgeService {
         workflow_status: "RUNNING_REMEDIATION",
         business_stage: "整改实施",
         user_message: "已进入整改实施阶段，我会按 1-2 分钟节奏持续跟进整改进展。",
+        next_business_action: "继续等待下一次整改进展；只有长时间无进展进入用户决策，或离开运行态时才停住",
         next_action_required: ["status"]
       };
     }

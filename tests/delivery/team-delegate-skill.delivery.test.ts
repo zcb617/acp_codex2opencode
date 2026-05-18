@@ -5,7 +5,10 @@ describe("team-delegate skill delivery wording", () => {
   it("must stop following up when the restored workflow no longer offers continue_wait", async () => {
     const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
 
-    expect(skill).toContain("如果 next_action_required 不包含 continue_wait");
+    expect(skill).toContain("当前仍是运行态且 next_action_required 包含 status");
+    expect(skill).toContain("继续持续跟进");
+    expect(skill).toContain("只有进入非运行态");
+    expect(skill).toContain("NEEDS_USER_DECISION 且 next_action_required 不包含 continue_wait");
     expect(skill).toContain("必须停止持续跟进");
     expect(skill).toContain("输出 user_message");
     expect(skill).toContain("继续已委派任务");

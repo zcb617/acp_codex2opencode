@@ -76,6 +76,8 @@
 1. 先提示用户二选一并停住等待用户输入。
 2. 禁止在当前轮使用阻塞等待命令（如 `Start-Sleep`）模拟倒计时自推进。
 3. 当 `allow_timeout_default=true` 且超时未收到用户选择时，由后续跟进周期按 `decision_source=timeout_default` 自动进入新的等待周期。
+4. 只要当前仍是运行态且 `next_action_required` 包含 `status`，主会话就必须继续按 `follow_up_policy.next_follow_up_at` 自动跟进；不能因为没有 `continue_wait` 就提前停住。
+5. 只有进入非运行态，或 `NEEDS_USER_DECISION` 且 `next_action_required` 不包含 `continue_wait` 时，主会话才停止持续跟进，并把插件返回的业务提示展示给用户。
 
 ## 业务交付闭环
 
