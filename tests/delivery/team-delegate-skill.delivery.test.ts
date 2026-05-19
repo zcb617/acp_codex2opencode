@@ -110,13 +110,33 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("主会话先提示用户二选一并停住等待用户输入");
     expect(skill).toContain("真实的后续唤醒");
     expect(skill).toContain("线程 heartbeat");
+    expect(skill).toContain("automation_update");
+    expect(skill).toContain("kind=heartbeat");
+    expect(skill).toContain("destination=thread");
     expect(skill).toContain("重新调用 `status`");
     expect(skill).toContain("禁止在当前轮用 `Start-Sleep`");
+    expect(skill).toContain("禁止用 `sleep`");
     expect(skill).toContain("用户明确选择");
     expect(skill).toContain("ACP 返回任意新进展");
     expect(skill).toContain("清空该计数");
     expect(skill).toContain("不是同一个机制");
     expect(skill).toContain("取消上一条默认继续用的后续唤醒");
+  });
+
+  it("must require real heartbeat tool execution instead of verbal promises or blocking sleep", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("没有真实线程 heartbeat，就不允许宣称会自动继续跟进");
+    expect(skill).toContain("必须实际调用 `automation_update`");
+    expect(skill).toContain("mode=create");
+    expect(skill).toContain("mode=update");
+    expect(skill).toContain("mode=delete");
+    expect(skill).toContain("workspace_path");
+    expect(skill).toContain("session_alias");
+    expect(skill).toContain("task_id");
+    expect(skill).toContain("如果当前环境没有这个工具或调用失败");
+    expect(skill).toContain("当前环境无法建立真实自动跟进");
+    expect(skill).toContain("交付测试判为失败");
   });
 
   it("must require main session to write remediation plan before ACP fixes delivery failures", async () => {

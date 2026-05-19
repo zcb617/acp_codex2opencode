@@ -107,7 +107,14 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("decision_source=user_selected");
     expect(skill).toContain("真实的后续唤醒");
     expect(skill).toContain("线程 heartbeat");
+    expect(skill).toContain("automation_update");
+    expect(skill).toContain("kind=heartbeat");
+    expect(skill).toContain("destination=thread");
     expect(skill).toContain("重新调用 `status`");
+    expect(skill).toContain("mode=create");
+    expect(skill).toContain("mode=update");
+    expect(skill).toContain("mode=delete");
+    expect(skill).toContain("禁止用 `sleep`");
     expect(skill).toContain("交付测试失败必须由主会话制定整改方案和整改计划");
     expect(skill).toContain("必须把完整整改方案和整改计划放入 `feedback_text`");
     expect(skill).toContain("ACP 只执行整改实施");
