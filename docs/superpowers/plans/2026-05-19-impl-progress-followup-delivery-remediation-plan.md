@@ -39,7 +39,7 @@ G1、G2。
 **设计来源：**  
 整改设计文档第 5.1 节 G1/G2、第 6.1 节、第 6.2 节。
 
-**修改范围：**  
+**文件范围：**  
 `src/session/bridge-service.ts`
 
 **实施步骤：**
@@ -68,10 +68,14 @@ else:
     return RUNNING_IMPLEMENTATION
 ```
 
+**验证命令：**  
+`npm run test:unit -- tests/unit/bridge-service-workflow.test.ts -t "implementation"`
+`npm run test:unit -- tests/unit/bridge-service-workflow.test.ts`
+
 **自动化验证：**  
 UT-01、UT-02、UT-04
 
-**交付测试影响：**  
+**对应交付场景：**  
 DT-01、DT-02、DT-08、DT-10
 
 **完成标准：**  
@@ -88,7 +92,7 @@ G1、G2。
 **设计来源：**  
 整改设计文档第 5.1 节 G1/G2、第 6.1 节、第 6.2 节。
 
-**修改范围：**  
+**文件范围：**  
 `src/session/bridge-service.ts`
 
 **实施步骤：**
@@ -112,10 +116,14 @@ else:
     return NEEDS_DELIVERY_TEST
 ```
 
+**验证命令：**  
+`npm run test:unit -- tests/unit/bridge-service-workflow.test.ts -t "remediation"`
+`npm run test:unit -- tests/unit/bridge-service-workflow.test.ts`
+
 **自动化验证：**  
 UT-03、UT-05
 
-**交付测试影响：**  
+**对应交付场景：**  
 DT-01、DT-02、DT-08、DT-10
 
 **完成标准：**  
@@ -132,7 +140,7 @@ G3、G4。
 **设计来源：**  
 整改设计文档第 5.1 节 G3/G4、第 6.2 节、第 6.4 节。
 
-**修改范围：**  
+**文件范围：**  
 `README.md`
 
 **实施步骤：**
@@ -152,10 +160,14 @@ if 缺少 heartbeat 前提说明:
 输出：用户可见规则与真实交付门禁一致
 ```
 
+**验证命令：**  
+`npm run test:delivery -- tests/delivery/team-delegate-skill.delivery.test.ts`
+`npm run test:unit -- tests/unit/bridge-service-workflow.test.ts`
+
 **自动化验证：**  
 UT-06、UT-07
 
-**交付测试影响：**  
+**对应交付场景：**  
 DT-12、DT-13
 
 **完成标准：**  
@@ -172,7 +184,7 @@ G4。
 **设计来源：**  
 整改设计文档第 5.1 节 G4、第 9 节。
 
-**修改范围：**  
+**文件范围：**  
 `docs/superpowers/specs/2026-05-19-impl-progress-followup-delivery-remediation-design.md`
 `docs/superpowers/plans/2026-05-19-impl-progress-followup-delivery-remediation-plan.md`
 
@@ -193,10 +205,14 @@ else if heartbeat tool missing:
 输出：可追溯的交付测试结论
 ```
 
+**验证命令：**  
+`npm run plugin:install-local`
+`codex plugin list`
+
 **自动化验证：**  
 无新增自动化；通过交付测试记录补足。
 
-**交付测试影响：**  
+**对应交付场景：**  
 DT-01 到 DT-13
 
 **完成标准：**  
@@ -256,36 +272,63 @@ codex plugin list
 
 ## 6. 真实业务交付测试计划
 
-1. 真实入口准备
-   - 在本机真实环境执行 `npm run plugin:install-local`。
-   - 刷新或重启 Codex 环境。
-   - 用 `codex plugin list` 确认插件已安装并启用。
+**真实入口：**
 
-2. 同链路复测
-   - 在真实 Codex CLI 中输入自然语言：
-     - `请新建一个团队委派任务，任务名固定为 <唯一任务名>。$team-delegate 帮我用团队委派流程完成这个插件的修复。方案文档在 docs/superpowers/specs/2026-05-16-impl-progress-followup-optimization-design.md，计划文档在 docs/superpowers/plans/2026-05-16-impl-progress-followup-optimization-plan.md。设计和计划已经确认，直接进入实施。如果需要执行模型，选择 llm-router-openai-compatible/kimi-for-roo。过程中有进展就告诉我，没动静太久再问我是否接手。`
-   - 确认模型后，首轮必须先看到计划实施运行态。
+- 在本机真实环境执行 `npm run plugin:install-local`。
+- 刷新或重启 Codex 环境。
+- 用 `codex plugin list` 确认插件已安装并启用。
+- 直接打开真实 Codex CLI，不允许用内部 API、直接 MCP 调用或字段检查代替。
 
-3. 持续跟进复测
-   - 若宿主有 heartbeat 工具，继续观察 DT-01 到 DT-13。
-   - 若宿主无 heartbeat 工具，记录该外部阻塞并停止宣称交付通过。
+**操作步骤：**
 
-4. 通过标准
-   - implementation/rework 首轮运行态问题在真实入口中消失。
-   - heartbeat 前提满足时，DT-01 到 DT-13 全部通过。
+1. 在真实 Codex CLI 中输入自然语言：
+   - `请新建一个团队委派任务，任务名固定为 <唯一任务名>。帮我用团队委派流程完成这个插件里关于实施阶段持续跟进的修复。方案和计划都已经确认，直接进入实施；如果需要执行模型，选择 llm-router-openai-compatible/kimi-for-roo。过程中有进展就告诉我，没动静太久再问我是否接手。`
+2. 确认模型后，观察首轮是否先进入计划实施运行态，而不是直接进入等待交付测试。
+3. 若进入整改实施链路，按同一真实入口观察首轮是否先进入整改实施运行态，而不是直接进入等待交付测试。
+4. 若真实宿主具备 heartbeat 或等价自动唤醒能力，继续按 `docs/团队委派交付测试必过表.md` 逐项复测 DT-01 到 DT-13。
+5. 若真实宿主不具备 heartbeat 或等价自动唤醒能力，记录该环境阻塞事实，并停止宣布交付测试通过。
 
-5. 失败后继续整改
-   - 若仍是仓库逻辑导致首轮运行态不可见，继续新增红灯测试并整改。
-   - 若仅剩 heartbeat 工具缺失，则向用户报告环境阻塞，等待环境前提满足后复测。
+**通过标准：**
+
+- implementation 首轮可观察到计划实施运行态。
+- remediation 首轮可观察到整改实施运行态。
+- implementation/rework 完成后，后续才允许进入等待交付测试。
+- 若真实宿主具备 heartbeat 或等价自动唤醒能力，`docs/团队委派交付测试必过表.md` 中 DT-01 到 DT-13 必须全部通过。
+- 若真实宿主不具备 heartbeat 或等价自动唤醒能力，本轮只能判定为环境阻塞，不能宣称交付测试通过。
+
+**失败后整改与再测试：**
+
+- 若仍是仓库逻辑导致 implementation/remediation 首轮运行态不可见，必须继续新增红灯测试并整改，再重走同一条真实 Codex CLI 链路。
+- 若 implementation/remediation 首轮问题已修复，但 DT-01 到 DT-13 中仍有失败项，必须把失败项写回 `docs/团队委派交付测试必过表.md` 对应记录，补整改任务后再次执行同一条真实 Codex CLI 链路。
+- 若仅剩 heartbeat 或等价自动唤醒能力缺失，则向用户报告环境阻塞，并在环境前提满足后再次重走同一条真实 Codex CLI 链路。
 
 ## 7. 交付测试失败整改记录
 
-- 当前失败事实：
-  - 真实 CLI 里 implementation 首轮直接跳到 `NEEDS_DELIVERY_TEST`。
-  - 当前宿主环境缺少 `automation_update` 或等价 heartbeat 工具。
-- 本轮整改策略：
-  - 先修复仓库内 implementation/rework 首轮运行态问题。
-  - 再在真实环境复测，确认剩余失败是否仅为宿主环境前提缺失。
+- **失败场景：**
+  - 真实 Codex CLI 入口发起团队委派后，implementation 首轮没有形成可观察运行态，直接落到等待交付测试。
+  - 同一次真实链路中，自动持续跟进还依赖真实宿主是否具备 heartbeat 或等价自动唤醒能力。
+- **输入数据：**
+  - `请新建一个团队委派任务，任务名固定为 <唯一任务名>。帮我用团队委派流程完成这个插件里关于实施阶段持续跟进的修复。方案和计划都已经确认，直接进入实施；如果需要执行模型，选择 llm-router-openai-compatible/kimi-for-roo。过程中有进展就告诉我，没动静太久再问我是否接手。`
+- **期望结果：**
+  - implementation 首轮先进入计划实施运行态，remediation 首轮先进入整改实施运行态；
+  - 只有运行态之后，后续才允许进入等待交付测试；
+  - 若真实宿主具备 heartbeat 或等价自动唤醒能力，再继续复测 DT-01 到 DT-13。
+- **实际结果：**
+  - 真实 CLI 中 implementation 首轮直接跳到等待交付测试；
+  - 无法在同一失败链路中先观察到 implementation 运行态；
+  - 自动持续跟进是否能形成真实证据，还受宿主 heartbeat 或等价自动唤醒能力影响。
+- **根因分析：**
+  - 仓库内 implementation/remediation 在首轮同步窗口中可能已经完成，首次响应被等待交付测试覆盖，吞掉了用户应先看到的运行态；
+  - 真实宿主若缺少 heartbeat 或等价自动唤醒能力，即使仓库内首轮运行态问题修复，也不能伪造自动持续跟进已通过。
+- **修复方案：**
+  - 先修复仓库内 implementation/remediation 首轮返回时序，让真实用户先看到运行态；
+  - 再重走同一条真实 Codex CLI 链路，区分“仓库问题已修复”与“环境前提仍阻塞”。
+- **复测命令：**
+  - `npm run plugin:install-local`
+  - `codex plugin list`
+  - `codex`
+- **复测结果：**
+  - 当前待实施；实施完成后必须按第 6 节同一条真实 Codex CLI 链路补齐结果。
 
 ## 8. 设计完成核对清单
 
@@ -302,3 +345,7 @@ codex plugin list
 - 下一步：
   1. 你确认后，我再新建分支进入编码实施。
   2. 实施完成后先跑自动化验证，再用真实 Codex CLI 重走同链路交付测试。
+- 恢复入口：
+  - 先打开 `docs/superpowers/specs/2026-05-19-impl-progress-followup-delivery-remediation-design.md` 与本计划；
+  - 再从真实 Codex CLI 链路复现“implementation 首轮直接跳等待交付测试”的失败事实；
+  - 进入实施后，必须先修复首轮运行态暴露，再继续验证自动持续跟进是否满足真实宿主前提。

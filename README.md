@@ -22,7 +22,7 @@
 3. `start` 后先完成模型闸门（`NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION`），再进入 ACP 执行阶段。
 4. 后续只能按 `next_action_required` 推进，不允许越级执行。
 
-你只需要给出需求文本，插件内部会按阶段执行并停等确认。运行阶段采用持续跟进：首次同步等待最长 3 分钟；如果 ACP 在这 3 分钟内完成会立刻返回。后续必须按 1-2 分钟节奏持续跟进并返回增量进展供主会话总结；只有超过 5 分钟仍无新进展，才要求用户决定继续等待或主会话接手。
+你只需要给出需求文本，插件内部会按阶段执行并停等确认。运行阶段采用持续跟进：首次同步等待最长 3 分钟；即使 ACP 在这 3 分钟内完成，首轮响应也必须先暴露一次可观察的运行态（`RUNNING_IMPLEMENTATION` 或 `RUNNING_REMEDIATION`），不能直接跳到交付测试。后续必须按 1-2 分钟节奏持续跟进并返回增量进展供主会话总结；只有超过 5 分钟仍无新进展，才要求用户决定继续等待或主会话接手。
 
 1. `action=start`：先走模型闸门：
    - 若存在且可用历史模型：返回 `NEEDS_MODEL_CONFIRM`
@@ -77,7 +77,7 @@
 2. 禁止在当前轮使用阻塞等待命令（如 `Start-Sleep`）模拟倒计时自推进。
 3. 只要插件返回了下一次跟进时间，主会话当前轮的第一优先动作就是为当前线程创建或刷新 heartbeat，让线程在该时间点自动再醒来并重新检查状态。
 4. heartbeat 创建或刷新必须满足：`kind=heartbeat`、`destination=thread`、`status=ACTIVE`；在 heartbeat 建好之前，禁止继续重复调用 `status` 冒充自动跟进。
-5. 如果当前环境没有 `automation_update` 或调用失败，就不能宣称“会自动继续跟进”；这类环境下真实交付测试必须判失败。
+5. 如果当前环境没有 `automation_update` 或等价 heartbeat 工具，就不能宣称“会自动继续跟进”；这类环境下真实交付测试必须判失败，不能伪装已满足自动持续跟进。
 6. 当 `allow_timeout_default=true` 时，60 秒默认继续也走同一套 heartbeat 机制；超时未收到用户选择时，由这次后续唤醒先重新检查状态，再按 `decision_source=timeout_default` 自动进入新的等待周期。
 7. 只要当前仍是运行态且 `next_action_required` 包含 `status`，主会话就必须继续按 `follow_up_policy.next_follow_up_at` 自动跟进；不能因为没有 `continue_wait` 就提前停住。
 8. 只有进入非运行态，或 `NEEDS_USER_DECISION` 且 `next_action_required` 不包含 `continue_wait` 时，主会话才停止持续跟进，并把插件返回的业务提示展示给用户。
@@ -86,6 +86,12 @@
 ## 业务交付闭环
 
 ACP 实施完成只代表代码实施阶段结束，不代表任务已经交付。插件会在实施完成后进入 `NEEDS_DELIVERY_TEST`，要求主会话从真实业务入口执行交付测试。
+
+实施与整改实施的首轮响应规则：
+
+1. 从真实入口进入 `implementation` 或 `remediation` 后，无论同步窗口内是否已完成，首轮响应必须先暴露一次运行态（`RUNNING_IMPLEMENTATION` / `RUNNING_REMEDIATION`）。
+2. 只有在首轮运行态被消耗后，后续 `status` 或下一阶段才允许返回 `NEEDS_DELIVERY_TEST`。
+3. 缺少首轮运行态暴露的真实交付测试必须判失败。
 
 闭环规则：
 

@@ -505,11 +505,21 @@ describe("bridge workflow approvals", () => {
       action: "planning_approve"
     });
     expect(implementationDone.success).toBe(true);
-    expect((implementationDone.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((implementationDone.data as { workflow_status: string }).workflow_status).toBe("RUNNING_IMPLEMENTATION");
     expect((implementationDone.data as { current_model?: string }).current_model).toBe(
       "llm-router-openai-compatible/kimi-for-roo"
     );
     expect((implementationDone.data as { current_agent_mode?: string }).current_agent_mode).toBe("build");
+    expect((implementationDone.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+
+    const implementationStatus = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002",
+      action: "status"
+    });
+    expect(implementationStatus.success).toBe(true);
+    expect((implementationStatus.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
 
     const delivered = await service.executeTask({
       workspace_path: "D:/repo",
@@ -548,7 +558,14 @@ describe("bridge workflow approvals", () => {
     });
 
     expect(done.success).toBe(true);
-    expect((done.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((done.data as { workflow_status: string }).workflow_status).toBe("RUNNING_IMPLEMENTATION");
+    expect((done.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+    const status = await service.executeTask({
+      ...input,
+      action: "status"
+    });
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
     const executeTurn = (service as unknown as { executeTurn: ReturnType<typeof vi.fn> }).executeTurn;
     const implementationCall = executeTurn.mock.calls.find((call) => call[2]?.includes("implementation"));
     expect(implementationCall?.[4]).toBe(86_400_000);
@@ -1603,12 +1620,25 @@ describe("bridge workflow approvals", () => {
     });
     expect(start.success).toBe(true);
     expect((start.data as { detected_start_phase: string }).detected_start_phase).toBe("implementation");
-    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("RUNNING_IMPLEMENTATION");
     expect((start.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "status"
+    ]);
+    expect((start.data as { user_message: string }).user_message).toContain("计划实施阶段");
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-007",
+      action: "status"
+    });
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((status.data as { next_action_required: string[] }).next_action_required).toEqual([
       "delivery_test_pass",
       "delivery_test_fail"
     ]);
-    expect((start.data as { user_message: string }).user_message).toContain("还不能判定交付完成");
+    expect((status.data as { user_message: string }).user_message).toContain("还不能判定交付完成");
   });
 
   it("should complete only after delivery test passes", async () => {
@@ -1687,7 +1717,17 @@ describe("bridge workflow approvals", () => {
     });
 
     expect(remediation.success).toBe(true);
-    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("RUNNING_REMEDIATION");
+    expect((remediation.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-return",
+      action: "status"
+    });
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
   });
 
   it("should restore the same task ACP session before remediation after a bridge restart", async () => {
@@ -1731,7 +1771,16 @@ describe("bridge workflow approvals", () => {
         session_strategy: "auto"
       })
     );
-    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("RUNNING_REMEDIATION");
+    expect((remediation.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+    const status = await restoredService.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-session-restore",
+      action: "status"
+    });
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
   });
 
   it("should ask the user to decide when the same task ACP session cannot be restored", async () => {
@@ -1897,7 +1946,17 @@ describe("bridge workflow approvals", () => {
         action: "remediation_approve",
         feedback_text: `第 ${round} 次整改方案：修复本轮失败点。\n第 ${round} 次整改计划：修改后复测同一条真实交付链路。`
       });
-      expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+      expect((remediation.data as { workflow_status: string }).workflow_status).toBe("RUNNING_REMEDIATION");
+      expect((remediation.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+
+      const remediationStatus = await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: "需求",
+        session_alias: "task-remediation-limit",
+        action: "status"
+      });
+      expect(remediationStatus.success).toBe(true);
+      expect((remediationStatus.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
 
       const failedAgain = await service.executeTask({
         workspace_path: "D:/repo",

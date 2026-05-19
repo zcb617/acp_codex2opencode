@@ -291,6 +291,7 @@ interface TaskWorkflowState {
   };
   steps: WorkflowStep[];
   idempotencySeq: number;
+  firstRunningStageExposurePending?: "RUNNING_IMPLEMENTATION" | "RUNNING_REMEDIATION";
 }
 
 export interface BridgeRuntimeOptions {
@@ -548,6 +549,7 @@ const DEFAULT_WORKFLOW_MODELS = [
   "llm-router-openai-responses/gpt-5.4-mini"
 ];
 const DEFAULT_WORKFLOW_SYNC_WAIT_MS = 180_000;
+const DEFAULT_WORKFLOW_INITIAL_RESPONSE_WAIT_MS = 2_000;
 const DEFAULT_WORKFLOW_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_WORKFLOW_POLL_INTERVAL_MIN_MS = 60_000;
 const DEFAULT_WORKFLOW_POLL_INTERVAL_MAX_MS = 120_000;
@@ -3044,6 +3046,10 @@ export class BridgeService {
     workflow.userDecisionTimeoutAt = undefined;
     workflow.progressCursorByTurn = {};
     this.resetWorkflowPollCycle(workflow);
+    if (phase === "implementation" || phase === "rework") {
+      workflow.firstRunningStageExposurePending =
+        runningStage === "RUNNING_REMEDIATION" ? "RUNNING_REMEDIATION" : "RUNNING_IMPLEMENTATION";
+    }
     this.persistWorkflowStateSoon(workflow);
     const task = (async () => {
       try {
@@ -3072,7 +3078,7 @@ export class BridgeService {
   }
 
   private async waitForWorkflowShortSyncWindow(workflow: TaskWorkflowState): Promise<void> {
-    const maxWait = Math.max(0, workflow.syncWaitMs);
+    const maxWait = Math.max(0, Math.min(workflow.syncWaitMs, DEFAULT_WORKFLOW_INITIAL_RESPONSE_WAIT_MS));
     if (maxWait === 0) {
       return;
     }
@@ -4427,6 +4433,30 @@ export class BridgeService {
       return {
         ...base,
         current_stage: "IMPLEMENTATION_RUNNING",
+        business_stage: "计划实施",
+        user_message: "当前仍在计划实施阶段，我会按 1-2 分钟节奏持续跟进实施进展；只要任务仍在运行，就不会提前停下。",
+        next_business_action: "继续等待下一次实施进展；只有长时间无进展进入用户决策，或离开运行态时才停住",
+        next_action_required: ["status"]
+      };
+    }
+    if (workflow.firstRunningStageExposurePending && workflow.stage === "NEEDS_DELIVERY_TEST") {
+      const pendingStage = workflow.firstRunningStageExposurePending;
+      workflow.firstRunningStageExposurePending = undefined;
+      if (pendingStage === "RUNNING_REMEDIATION") {
+        return {
+          ...base,
+          current_stage: "REMEDIATION_RUNNING",
+          workflow_status: "RUNNING_REMEDIATION",
+          business_stage: "整改实施",
+          user_message: "已进入整改实施阶段，我会按 1-2 分钟节奏持续跟进整改进展。",
+          next_business_action: "继续等待下一次整改进展；只有长时间无进展进入用户决策，或离开运行态时才停住",
+          next_action_required: ["status"]
+        };
+      }
+      return {
+        ...base,
+        current_stage: "IMPLEMENTATION_RUNNING",
+        workflow_status: "RUNNING_IMPLEMENTATION",
         business_stage: "计划实施",
         user_message: "当前仍在计划实施阶段，我会按 1-2 分钟节奏持续跟进实施进展；只要任务仍在运行，就不会提前停下。",
         next_business_action: "继续等待下一次实施进展；只有长时间无进展进入用户决策，或离开运行态时才停住",
