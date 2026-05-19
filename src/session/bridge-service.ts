@@ -292,6 +292,7 @@ interface TaskWorkflowState {
   steps: WorkflowStep[];
   idempotencySeq: number;
   firstRunningStageExposurePending?: "RUNNING_IMPLEMENTATION" | "RUNNING_REMEDIATION";
+  firstRunningStageExposed?: boolean;
 }
 
 export interface BridgeRuntimeOptions {
@@ -2553,7 +2554,8 @@ export class BridgeService {
       phaseGates: workflow.phaseGates,
       steps: workflow.steps,
       idempotencySeq: workflow.idempotencySeq,
-      firstRunningStageExposurePending: workflow.firstRunningStageExposurePending
+      firstRunningStageExposurePending: workflow.firstRunningStageExposurePending,
+      firstRunningStageExposed: workflow.firstRunningStageExposed ?? false
     };
   }
 
@@ -2618,7 +2620,8 @@ export class BridgeService {
       phaseGates: this.readPhaseGates(snapshot.phaseGates),
       steps: this.readWorkflowSteps(snapshot.steps),
       idempotencySeq: this.readNumber(snapshot.idempotencySeq) ?? 0,
-      firstRunningStageExposurePending: this.readFirstRunningStageExposurePending(snapshot.firstRunningStageExposurePending)
+      firstRunningStageExposurePending: this.readFirstRunningStageExposurePending(snapshot.firstRunningStageExposurePending),
+      firstRunningStageExposed: this.readBoolean(snapshot.firstRunningStageExposed) ?? false
     };
   }
 
@@ -2946,7 +2949,14 @@ export class BridgeService {
   private async restoreExistingWorkflowForStart(workflowKey: string): Promise<TaskWorkflowState | undefined> {
     const existing = this.workflowByKey.get(workflowKey);
     if (existing) {
-      return this.isTerminalStage(existing.stage) ? undefined : existing;
+      if (this.isTerminalStage(existing.stage)) {
+        return undefined;
+      }
+      if (!existing.firstRunningStageExposed && existing.stage === "NEEDS_DELIVERY_TEST") {
+        existing.firstRunningStageExposurePending =
+          existing.remediationRound > 0 ? "RUNNING_REMEDIATION" : "RUNNING_IMPLEMENTATION";
+      }
+      return existing;
     }
 
     const record = await this.findPersistedWorkflow(workflowKey);
@@ -2957,6 +2967,10 @@ export class BridgeService {
     const restored = this.restoreWorkflowState(record);
     if (this.isTerminalStage(restored.stage)) {
       return undefined;
+    }
+    if (!restored.firstRunningStageExposed && restored.stage === "NEEDS_DELIVERY_TEST") {
+      restored.firstRunningStageExposurePending =
+        restored.remediationRound > 0 ? "RUNNING_REMEDIATION" : "RUNNING_IMPLEMENTATION";
     }
     this.workflowByKey.set(workflowKey, restored);
     return restored;
@@ -4458,6 +4472,7 @@ export class BridgeService {
     if (workflow.firstRunningStageExposurePending && workflow.stage === "NEEDS_DELIVERY_TEST") {
       const pendingStage = workflow.firstRunningStageExposurePending;
       workflow.firstRunningStageExposurePending = undefined;
+      workflow.firstRunningStageExposed = true;
       this.persistWorkflowStateSoon(workflow);
       if (pendingStage === "RUNNING_REMEDIATION") {
         return {
