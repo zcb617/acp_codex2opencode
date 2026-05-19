@@ -959,7 +959,9 @@ export class BridgeService {
           bridgeSessionId: workflow.bridgeSessionId,
           remediationRound: workflow.remediationRound
         });
-        return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+        const remediationResponse = this.buildWorkflowStatusResponse(workflow);
+        await this.persistWorkflowState(workflow);
+        return makeResult(requestId, remediationResponse);
       }
 
       if (action === "restart_acp_session") {
@@ -971,7 +973,9 @@ export class BridgeService {
           taskId,
           bridgeSessionId: workflow.bridgeSessionId
         });
-        return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+        const restartResponse = this.buildWorkflowStatusResponse(workflow);
+        await this.persistWorkflowState(workflow);
+        return makeResult(requestId, restartResponse);
       }
 
       if (action === "cancel_follow_up") {
@@ -1056,7 +1060,9 @@ export class BridgeService {
         bridgeSessionId: workflow.bridgeSessionId,
         steps: workflow.steps.length
       });
-      return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+      const planningApproveResponse = this.buildWorkflowStatusResponse(workflow);
+      await this.persistWorkflowState(workflow);
+      return makeResult(requestId, planningApproveResponse);
     } catch (error) {
       const bridgeError = this.normalizeError(error);
       await this.audit(requestId, "task.execute", "codex", bridgeError.code, {
@@ -1460,6 +1466,7 @@ export class BridgeService {
       selectedModel
     });
     const response = this.buildWorkflowStatusResponse(workflow);
+    await this.persistWorkflowState(workflow);
     return makeResult(requestId, {
       ...response,
       selected_model: selectedModel
@@ -2545,7 +2552,8 @@ export class BridgeService {
       lastProgressUpdate: workflow.lastProgressUpdate,
       phaseGates: workflow.phaseGates,
       steps: workflow.steps,
-      idempotencySeq: workflow.idempotencySeq
+      idempotencySeq: workflow.idempotencySeq,
+      firstRunningStageExposurePending: workflow.firstRunningStageExposurePending
     };
   }
 
@@ -2609,7 +2617,8 @@ export class BridgeService {
       lastProgressUpdate: this.readProgressUpdate(snapshot.lastProgressUpdate),
       phaseGates: this.readPhaseGates(snapshot.phaseGates),
       steps: this.readWorkflowSteps(snapshot.steps),
-      idempotencySeq: this.readNumber(snapshot.idempotencySeq) ?? 0
+      idempotencySeq: this.readNumber(snapshot.idempotencySeq) ?? 0,
+      firstRunningStageExposurePending: this.readFirstRunningStageExposurePending(snapshot.firstRunningStageExposurePending)
     };
   }
 
@@ -2665,6 +2674,13 @@ export class BridgeService {
       "FAILED"
     ];
     return stage && allowed.includes(stage as WorkflowStage) ? (stage as WorkflowStage) : undefined;
+  }
+
+  private readFirstRunningStageExposurePending(
+    value: unknown
+  ): "RUNNING_IMPLEMENTATION" | "RUNNING_REMEDIATION" | undefined {
+    const stage = this.readString(value);
+    return stage === "RUNNING_IMPLEMENTATION" || stage === "RUNNING_REMEDIATION" ? stage : undefined;
   }
 
   private readWorkflowPhase(value: unknown): WorkflowPhase | undefined {
@@ -4442,6 +4458,7 @@ export class BridgeService {
     if (workflow.firstRunningStageExposurePending && workflow.stage === "NEEDS_DELIVERY_TEST") {
       const pendingStage = workflow.firstRunningStageExposurePending;
       workflow.firstRunningStageExposurePending = undefined;
+      this.persistWorkflowStateSoon(workflow);
       if (pendingStage === "RUNNING_REMEDIATION") {
         return {
           ...base,
