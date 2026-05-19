@@ -126,11 +126,15 @@ describe("team-delegate skill delivery wording", () => {
   it("must require real heartbeat tool execution instead of verbal promises or blocking sleep", async () => {
     const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
 
+    expect(skill).toContain("当前轮第一优先动作");
+    expect(skill).toContain("不是继续追 `status`");
+    expect(skill).toContain("不能在当前轮继续反复调用 `status`");
     expect(skill).toContain("没有真实线程 heartbeat，就不允许宣称会自动继续跟进");
     expect(skill).toContain("必须实际调用 `automation_update`");
     expect(skill).toContain("mode=create");
     expect(skill).toContain("mode=update");
     expect(skill).toContain("mode=delete");
+    expect(skill).toContain("status=ACTIVE");
     expect(skill).toContain("workspace_path");
     expect(skill).toContain("session_alias");
     expect(skill).toContain("task_id");

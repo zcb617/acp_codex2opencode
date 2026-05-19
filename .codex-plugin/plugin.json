@@ -33,8 +33,8 @@
     "termsOfServiceURL": "https://example.com/terms",
     "defaultPrompt": [
       "先判定 start_phase 与 development_type，再调用 delegate.task.execute action=start。",
-      "start 必须带 start_phase 和 development_type；按状态推进，禁止越级。",
-      "feature 走开发指南；bugfix 走 BUG 修改指南；不清楚用 need_user_input。"
+      "start 必须带 start_phase 和 development_type；feature 走开发指南，bugfix 走 BUG 指南，不清楚用 need_user_input。",
+      "给了下一次跟进时间就先调 automation_update(kind=heartbeat,destination=thread,status=ACTIVE)；建不成别承诺自动继续，禁用重复 status 或 sleep。"
     ],
     "brandColor": "#0B6E4F"
   }

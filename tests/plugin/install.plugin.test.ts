@@ -53,6 +53,12 @@ describe("PT-01 plugin install contract", () => {
     expect(prompts).toContain("action=start");
     expect(prompts).toContain("start_phase");
     expect(prompts).toContain("development_type");
+    expect(prompts).toContain("automation_update");
+    expect(prompts).toContain("heartbeat");
+    expect(prompts).toContain("status=ACTIVE");
+    expect(prompts).toContain("建不成别承诺自动继续");
+    expect(prompts).toContain("status");
+    expect(prompts).toContain("sleep");
 
     const mcpRaw = await readFile(join(root, ".mcp.json"), "utf8");
     const mcp = JSON.parse(mcpRaw) as {
@@ -105,6 +111,9 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("allow_timeout_default");
     expect(skill).toContain("decision_source=timeout_default");
     expect(skill).toContain("decision_source=user_selected");
+    expect(skill).toContain("<REAL-HEARTBEAT-FIRST>");
+    expect(skill).toContain("当前轮第一优先动作");
+    expect(skill).toContain("不是继续追 `status`");
     expect(skill).toContain("真实的后续唤醒");
     expect(skill).toContain("线程 heartbeat");
     expect(skill).toContain("automation_update");
@@ -125,7 +134,6 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("反例（必须判为 `need_user_input`");
     expect(skill).toContain("我给你一个方法论，再补一句‘按这个思路加 AI 功能’。");
     expect(skill).toContain("参考这份资料，帮我优化一下插件。");
-    expect(skill).not.toContain("轮询");
     expect(skill).not.toContain("监控");
     expect(skill).not.toContain("沉默");
     expect(skill).not.toContain("柔性轮询");
@@ -133,6 +141,17 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).not.toContain("沉默窗口");
     expect(skill).not.toContain("沉默监控");
     expect(skill).not.toContain("建议检查时间");
+
+    const mcpServerSource = await readFile(
+      join(root, "src", "plugin", "mcp-server.ts"),
+      "utf8"
+    );
+    expect(mcpServerSource).toContain("automation_update");
+    expect(mcpServerSource).toContain("kind=heartbeat");
+    expect(mcpServerSource).toContain("destination=thread");
+    expect(mcpServerSource).toContain("status=ACTIVE");
+    expect(mcpServerSource).toContain("禁止在 heartbeat 建好之前继续重复调用 status");
+    expect(mcpServerSource).toContain("主会话不得宣称会自动继续跟进");
   });
 
   it("should package all design and planning guide docs with the team-delegate skill", async () => {

@@ -25,6 +25,16 @@ description: Use only when the user explicitly asks for delegation workflow/team
 6. 禁止在插件内部通过关键词穷举判断开发类型；自然语言理解由主会话完成，插件只根据 `development_type` 选择文档规则。
 </PHASE-JUDGEMENT-FIRST>
 
+<REAL-HEARTBEAT-FIRST>
+只要插件返回了下一次跟进时间，当前轮第一优先动作不是继续追 `status`，而是先把真实线程 heartbeat 建起来。
+
+1. 运行态拿到 `follow_up_policy.next_follow_up_at` 后，必须先调用 `automation_update(kind=heartbeat, destination=thread)` 创建或刷新后续唤醒，再结束当前轮。
+2. 用户决策阶段允许 60 秒默认继续时，必须先为 `user_decision_policy.timeout_default_deadline_at` 创建 heartbeat，再停住等待用户输入。
+3. heartbeat 的提示内容只能回到同一个任务闭环重新查状态，不能改成新任务 `start`，也不能在当前轮继续反复调用 `status` 充当自动跟进。
+4. 如果 heartbeat 没有成功创建，就不允许对用户说“我会继续跟进”；必须直接说明当前环境无法建立真实自动跟进，并把这次交付测试判为失败。
+5. 禁止用 `sleep`、`Start-Sleep`、shell 阻塞等待或重复 `status` 轮询代替真实 heartbeat。
+</REAL-HEARTBEAT-FIRST>
+
 <BUSINESS-FIRST-OUTPUT>
 所有面向用户的输出必须业务导向。
 
@@ -77,7 +87,7 @@ Design / Planning 阶段必须读取本 skill 自带 `docs/` 目录里的对应�
 9. **计划必须对齐方案来源。** Planning 不能凭空写；如果 Design 是主会话刚生成的文件，重新 `start` 进入 Planning 时必须在 `requirement_text` 写明该方案文件路径，并在写计划前读取该文件；如果方案是用户直接提供的正文，计划必须以该正文为依据。
 10. **不要主动传短超时。** 正常业务流程不要传 `timeout_ms`；除非用户明确要求限制等待时间，否则让插件使用安装时配置的长轮次超时。
 11. **实施阶段必须满足 1-2 分钟持续跟进节奏。** 这个节奏是硬性流程要求，不是可选项；未到下一次持续跟进时间，禁止提前向用户输出暂无进展；无进展决策点必须先提示用户。
-12. **用户决策提示后必须先停住等待。** 当 `user_decision_policy.allow_timeout_default=true` 时，主会话先提示用户二选一并停住等待用户输入；同时必须立刻调用 `automation_update` 为当前线程安排一次 `kind=heartbeat` 的真实的后续唤醒，在 `user_decision_policy.timeout_default_after_seconds` 秒后重新检查状态。超时默认继续由这次后续唤醒触发，调用 `continue_wait` 时传 `decision_source=timeout_default`。禁止在当前轮用 `Start-Sleep`、`sleep` 或其他阻塞命令模拟倒计时并自推进。
+12. **用户决策提示后必须先停住等待。** 当 `user_decision_policy.allow_timeout_default=true` 时，主会话先提示用户二选一并停住等待用户输入；同时必须立刻调用 `automation_update` 为当前线程安排一次 `kind=heartbeat` 的真实的后续唤醒，在 `user_decision_policy.timeout_default_after_seconds` 秒后重新检查状态。超时默认继续由这次后续唤醒触发，调用 `continue_wait` 时传 `decision_source=timeout_default`。禁止在当前轮用 `Start-Sleep`、`sleep`、shell 阻塞等待或重复 `status` 模拟倒计时并自推进。
 13. **实施完成不等于交付完成。** 计划实施完成后必须进入真实业务交付测试；只有交付测试通过后，才能向用户声明完成。
 14. **交付测试失败必须由主会话制定整改方案和整改计划。** 失败后主会话必须提交失败材料，并基于失败材料生成整改方案和整改计划；用户确认后，才调用 `remediation_approve` 把完整整改方案和整改计划交给 ACP 执行整改。ACP 不负责制定该方案。
 15. **ACP 整改次数固定为 3 次。** 整改次数由插件状态机控制，不能由 LLM 或调用参数决定；完成 3 次整改后仍未通过，只能由主会话接手整改或取消后续工作。
@@ -178,11 +188,11 @@ digraph team_delegate_flow {
 
 1. 先遵循同步窗口（由插件内部处理）。
 2. 然后必须按插件返回的下一次跟进时间持续跟进：运行态看 `follow_up_policy.next_follow_up_at`，间隔必须落在 `follow_up_policy.interval_min_seconds` 到 `follow_up_policy.interval_max_seconds` 之间，当前要求是 1-2 分钟；进入用户决策且允许默认继续时，看 `user_decision_policy.timeout_default_deadline_at`，该时间点就是下一次自动跟进时间。
-   - 只要插件给出了下一次跟进时间，主会话就必须立刻调用 `automation_update` 为当前线程创建或刷新一次 `kind=heartbeat` 的后续唤醒，让线程在该时间点自动再醒来。
+   - 只要插件给出了下一次跟进时间，主会话当前轮的第一优先动作就必须是立刻调用 `automation_update` 为当前线程创建或刷新一次 `kind=heartbeat` 的后续唤醒，让线程在该时间点自动再醒来。
    - `automation_update` 的要求必须满足：`mode=create` 或 `mode=update`、`kind=heartbeat`、`destination=thread`、`status=ACTIVE`。
    - heartbeat 的提示内容必须只做一件事：回到同一个任务闭环，再调用 `delegate.task.execute` 查看当前状态；禁止改成新任务 `start`。
    - heartbeat 提示内容里必须保留当前任务身份信息：`workspace_path`、`session_alias`、`task_id`（如果已有）。
-   - 禁止用 `sleep`、`Start-Sleep`、shell 阻塞等待或“稍后我再看”这种口头承诺代替 `automation_update`。
+   - 禁止在 heartbeat 建好之前继续重复调用 `status`；也禁止用 `sleep`、`Start-Sleep`、shell 阻塞等待或“稍后我再看”这种口头承诺代替 `automation_update`。
 3. 每次 `status` 返回后，先看 `progress_update.has_new_output`：
    - 若为 `true`，用中文向用户输出一段简短进展总结，不粘贴完整原始过程。
    - 若为 `true`，继续等待，不询问是否接手。

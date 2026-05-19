@@ -79,6 +79,30 @@ npm run plugin:install-local
    - `delegate.turn.cancel`
    - `delegate.session.close`
 
+### H. 真实 Codex CLI 交付验证入口
+
+1. 打开真实 Codex CLI，并确认当前会话已经加载刚安装的插件。
+2. 使用真实业务语言发起团队委派，例如：
+
+```text
+帮我用团队委派流程完成这个开发任务。设计和计划已经确认，直接进入实施。过程中有进展就告诉我，没动静太久再问我是否接手。
+```
+
+3. 如果进入模型确认或模型选择，按本次任务要求选择对应实施模型。
+4. 一旦插件返回了下一次跟进时间，必须确认当前宿主线程具备真实 heartbeat 能力：
+   - 能实际调用 `automation_update`
+   - 创建或刷新参数满足 `kind=heartbeat`、`destination=thread`、`status=ACTIVE`
+   - heartbeat 内容只能回到同一个任务闭环重新查状态
+5. 如果当前真实宿主没有 `automation_update` 或调用失败，必须直接记录：
+   - `当前环境无法建立真实自动跟进`
+   - 本次交付测试失败
+   - 不允许再口头承诺“我会继续跟进”
+6. 禁止把以下动作当成交付验证通过证据：
+   - 手动重复触发 `status`
+   - 用 `sleep`、`Start-Sleep` 或 shell 阻塞等待冒充 heartbeat
+   - 只看内部字段，不观察真实线程是否自动回来
+7. heartbeat 前提满足后，按 [docs/团队委派交付测试必过表.md](/var/work/acp_codex2opencode/docs/团队委派交付测试必过表.md) 逐项执行 DT-01 到 DT-13。任一项不通过，本次真实交付验证结论就是失败。
+
 ## 卸载步骤
 
 ```bash
