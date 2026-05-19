@@ -75,11 +75,13 @@
 
 1. 先提示用户二选一并停住等待用户输入。
 2. 禁止在当前轮使用阻塞等待命令（如 `Start-Sleep`）模拟倒计时自推进。
-3. 只要插件返回了下一次跟进时间，主会话就必须为当前线程创建或刷新 heartbeat，让线程在该时间点自动再醒来并重新检查状态。
-4. 当 `allow_timeout_default=true` 时，60 秒默认继续也走同一套 heartbeat 机制；超时未收到用户选择时，由这次后续唤醒先重新检查状态，再按 `decision_source=timeout_default` 自动进入新的等待周期。
-5. 只要当前仍是运行态且 `next_action_required` 包含 `status`，主会话就必须继续按 `follow_up_policy.next_follow_up_at` 自动跟进；不能因为没有 `continue_wait` 就提前停住。
-6. 只有进入非运行态，或 `NEEDS_USER_DECISION` 且 `next_action_required` 不包含 `continue_wait` 时，主会话才停止持续跟进，并把插件返回的业务提示展示给用户。
-7. 只要用户提前回复、任务离开 `NEEDS_USER_DECISION`，或 ACP 已恢复有效进展，就必须取消上一条默认继续用的后续唤醒，避免重复推进。
+3. 只要插件返回了下一次跟进时间，主会话当前轮的第一优先动作就是为当前线程创建或刷新 heartbeat，让线程在该时间点自动再醒来并重新检查状态。
+4. heartbeat 创建或刷新必须满足：`kind=heartbeat`、`destination=thread`、`status=ACTIVE`；在 heartbeat 建好之前，禁止继续重复调用 `status` 冒充自动跟进。
+5. 如果当前环境没有 `automation_update` 或调用失败，就不能宣称“会自动继续跟进”；这类环境下真实交付测试必须判失败。
+6. 当 `allow_timeout_default=true` 时，60 秒默认继续也走同一套 heartbeat 机制；超时未收到用户选择时，由这次后续唤醒先重新检查状态，再按 `decision_source=timeout_default` 自动进入新的等待周期。
+7. 只要当前仍是运行态且 `next_action_required` 包含 `status`，主会话就必须继续按 `follow_up_policy.next_follow_up_at` 自动跟进；不能因为没有 `continue_wait` 就提前停住。
+8. 只有进入非运行态，或 `NEEDS_USER_DECISION` 且 `next_action_required` 不包含 `continue_wait` 时，主会话才停止持续跟进，并把插件返回的业务提示展示给用户。
+9. 只要用户提前回复、任务离开 `NEEDS_USER_DECISION`，或 ACP 已恢复有效进展，就必须取消上一条默认继续用的后续唤醒，避免重复推进。
 
 ## 业务交付闭环
 

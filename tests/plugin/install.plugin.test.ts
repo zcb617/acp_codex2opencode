@@ -152,6 +152,14 @@ describe("PT-01 plugin install contract", () => {
     expect(mcpServerSource).toContain("status=ACTIVE");
     expect(mcpServerSource).toContain("禁止在 heartbeat 建好之前继续重复调用 status");
     expect(mcpServerSource).toContain("主会话不得宣称会自动继续跟进");
+
+    const readme = await readFile(join(root, "README.md"), "utf8");
+    expect(readme).toContain("当前轮的第一优先动作");
+    expect(readme).toContain("kind=heartbeat");
+    expect(readme).toContain("destination=thread");
+    expect(readme).toContain("status=ACTIVE");
+    expect(readme).toContain("禁止继续重复调用 `status`");
+    expect(readme).toContain("真实交付测试必须判失败");
   });
 
   it("should package all design and planning guide docs with the team-delegate skill", async () => {
