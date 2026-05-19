@@ -89,19 +89,18 @@ npm run plugin:install-local
 ```
 
 3. 如果进入模型确认或模型选择，按本次任务要求选择对应实施模型。
-4. 一旦插件返回了下一次跟进时间，必须确认当前宿主线程具备真实 heartbeat 能力：
-   - 能实际调用 `automation_update`
-   - 创建或刷新参数满足 `kind=heartbeat`、`destination=thread`、`status=ACTIVE`
-   - heartbeat 内容只能回到同一个任务闭环重新查状态
-5. 如果当前真实宿主没有 `automation_update` 或调用失败，必须直接记录：
+4. 一旦插件返回了下一次跟进时间，必须确认当前宿主线程具备真实的自动回来路径：
+   - 若能实际调用 `automation_update`，创建或刷新参数满足 `kind=heartbeat`、`destination=thread`、`status=ACTIVE`
+   - 若当前宿主没有 `automation_update`，但这是一条持续运行的真实 Codex CLI 会话，则主会话不能结束当前轮，必须在同一轮里保留等待窗口并到点后自动回到同一个任务闭环重新查状态
+5. 只有在“既没有 heartbeat，也没有同轮自动续跑”时，才直接记录：
    - `当前环境无法建立真实自动跟进`
    - 本次交付测试失败
    - 不允许再口头承诺“我会继续跟进”
 6. 禁止把以下动作当成交付验证通过证据：
-   - 手动重复触发 `status`
-   - 用 `sleep`、`Start-Sleep` 或 shell 阻塞等待冒充 heartbeat
+   - 在当前轮已经结束后再手动重复触发 `status`
+   - 人工补发消息、再次点击“再跟踪”或其他人工补触发动作
    - 只看内部字段，不观察真实线程是否自动回来
-7. heartbeat 前提满足后，按 [docs/团队委派交付测试必过表.md](/var/work/acp_codex2opencode/docs/团队委派交付测试必过表.md) 逐项执行 DT-01 到 DT-13。任一项不通过，本次真实交付验证结论就是失败。
+7. 自动回来路径确认后，按 [docs/团队委派交付测试必过表.md](/var/work/acp_codex2opencode/docs/团队委派交付测试必过表.md) 逐项执行 DT-01 到 DT-13。任一项不通过，本次真实交付验证结论就是失败。
 
 ## 卸载步骤
 

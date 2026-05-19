@@ -114,8 +114,9 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("kind=heartbeat");
     expect(skill).toContain("destination=thread");
     expect(skill).toContain("重新调用 `status`");
-    expect(skill).toContain("禁止在当前轮用 `Start-Sleep`");
-    expect(skill).toContain("禁止用 `sleep`");
+    expect(skill).toContain("当前真实 Codex CLI 会话还能继续运行");
+    expect(skill).toContain("在当前轮保留这 60 秒窗口");
+    expect(skill).toContain("禁止结束当前轮后再靠人工补触发");
     expect(skill).toContain("用户明确选择");
     expect(skill).toContain("ACP 返回任意新进展");
     expect(skill).toContain("清空该计数");
@@ -123,22 +124,17 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("取消上一条默认继续用的后续唤醒");
   });
 
-  it("must require real heartbeat tool execution instead of verbal promises or blocking sleep", async () => {
+  it("must require real auto-follow-up instead of verbal promises", async () => {
     const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
 
     expect(skill).toContain("当前轮第一优先动作");
-    expect(skill).toContain("不是继续追 `status`");
-    expect(skill).toContain("不能在当前轮继续反复调用 `status`");
-    expect(skill).toContain("没有真实线程 heartbeat，就不允许宣称会自动继续跟进");
-    expect(skill).toContain("必须实际调用 `automation_update`");
-    expect(skill).toContain("mode=create");
-    expect(skill).toContain("mode=update");
-    expect(skill).toContain("mode=delete");
-    expect(skill).toContain("status=ACTIVE");
-    expect(skill).toContain("workspace_path");
-    expect(skill).toContain("session_alias");
-    expect(skill).toContain("task_id");
-    expect(skill).toContain("如果当前环境没有这个工具或调用失败");
+    expect(skill).toContain("优先调用 `automation_update`");
+    expect(skill).toContain("当前真实 Codex CLI 会话");
+    expect(skill).toContain("不得结束当前轮");
+    expect(skill).toContain("同一个任务闭环");
+    expect(skill).toContain("用户手动补发消息");
+    expect(skill).toContain("手动再点一次");
+    expect(skill).toContain("既没有 heartbeat 能力，也无法把当前轮保活");
     expect(skill).toContain("当前环境无法建立真实自动跟进");
     expect(skill).toContain("交付测试判为失败");
   });

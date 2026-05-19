@@ -56,9 +56,9 @@ describe("PT-01 plugin install contract", () => {
     expect(prompts).toContain("automation_update");
     expect(prompts).toContain("heartbeat");
     expect(prompts).toContain("status=ACTIVE");
-    expect(prompts).toContain("建不成别承诺自动继续");
-    expect(prompts).toContain("status");
-    expect(prompts).toContain("sleep");
+    expect(prompts).toContain("没这个能力就别结束当前轮");
+    expect(prompts).toContain("到点自动再查");
+    expect(prompts).toContain("手动补触发");
 
     const mcpRaw = await readFile(join(root, ".mcp.json"), "utf8");
     const mcp = JSON.parse(mcpRaw) as {
@@ -111,19 +111,18 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("allow_timeout_default");
     expect(skill).toContain("decision_source=timeout_default");
     expect(skill).toContain("decision_source=user_selected");
-    expect(skill).toContain("<REAL-HEARTBEAT-FIRST>");
+    expect(skill).toContain("<REAL-FOLLOW-UP-FIRST>");
     expect(skill).toContain("当前轮第一优先动作");
-    expect(skill).toContain("不是继续追 `status`");
-    expect(skill).toContain("真实的后续唤醒");
-    expect(skill).toContain("线程 heartbeat");
+    expect(skill).toContain("优先用线程 heartbeat");
+    expect(skill).toContain("真实 Codex CLI 会话");
+    expect(skill).toContain("保持当前轮活着");
     expect(skill).toContain("automation_update");
     expect(skill).toContain("kind=heartbeat");
     expect(skill).toContain("destination=thread");
     expect(skill).toContain("重新调用 `status`");
-    expect(skill).toContain("mode=create");
-    expect(skill).toContain("mode=update");
-    expect(skill).toContain("mode=delete");
-    expect(skill).toContain("禁止用 `sleep`");
+    expect(skill).toContain("手动补发消息");
+    expect(skill).toContain("手动再点一次");
+    expect(skill).toContain("既没有 heartbeat 能力，也无法把当前轮保活");
     expect(skill).toContain("交付测试失败必须由主会话制定整改方案和整改计划");
     expect(skill).toContain("必须把完整整改方案和整改计划放入 `feedback_text`");
     expect(skill).toContain("ACP 只执行整改实施");
@@ -150,16 +149,18 @@ describe("PT-01 plugin install contract", () => {
     expect(mcpServerSource).toContain("kind=heartbeat");
     expect(mcpServerSource).toContain("destination=thread");
     expect(mcpServerSource).toContain("status=ACTIVE");
-    expect(mcpServerSource).toContain("禁止在 heartbeat 建好之前继续重复调用 status");
-    expect(mcpServerSource).toContain("主会话不得宣称会自动继续跟进");
+    expect(mcpServerSource).toContain("不得结束当前轮");
+    expect(mcpServerSource).toContain("同一轮保留等待窗口");
+    expect(mcpServerSource).toContain("手动补触发");
 
     const readme = await readFile(join(root, "README.md"), "utf8");
     expect(readme).toContain("当前轮的第一优先动作");
     expect(readme).toContain("kind=heartbeat");
     expect(readme).toContain("destination=thread");
     expect(readme).toContain("status=ACTIVE");
-    expect(readme).toContain("禁止继续重复调用 `status`");
-    expect(readme).toContain("真实交付测试必须判失败");
+    expect(readme).toContain("不得结束当前轮");
+    expect(readme).toContain("手动补发消息");
+    expect(readme).toContain("同一轮保留等待窗口");
   });
 
   it("should package all design and planning guide docs with the team-delegate skill", async () => {

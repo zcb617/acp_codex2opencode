@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     "delegate.task.execute",
     {
       description:
-        "高层委派入口：按业务阶段推进方案、计划、实施、交付测试和整改闭环；实施完成后必须等待真实业务交付测试，通过后才完成；失败后由主会话生成整改方案和整改计划，用户确认后通过 remediation_approve 交给 ACP 执行整改并复测。只要插件返回了下一次跟进时间，主会话就必须立刻调用 `automation_update` 为当前线程创建、刷新或取消 `kind=heartbeat` 的真实后续唤醒（`mode=create`/`update`/`delete`、`kind=heartbeat`、`destination=thread`、`status=ACTIVE`）；运行态只要 next_action_required 仍包含 status，就必须继续按 follow_up_policy 持续跟进，禁止在 heartbeat 建好之前继续重复调用 status；当 NEEDS_USER_DECISION 允许超时默认继续时，也必须沿用同一套 heartbeat 机制，在超时后重新检查状态并按 timeout_default 恢复等待。禁止用 `sleep`、`Start-Sleep` 或其他阻塞等待代替真实线程 heartbeat；如果 heartbeat 工具不可用或调用失败，主会话不得宣称会自动继续跟进。只有进入非运行态，或 NEEDS_USER_DECISION 且 next_action_required 不包含 continue_wait 时，才停止持续跟进并向用户输出 user_message。",
+        "高层委派入口：按业务阶段推进方案、计划、实施、交付测试和整改闭环；实施完成后必须等待真实业务交付测试，通过后才完成；失败后由主会话生成整改方案和整改计划，用户确认后通过 remediation_approve 交给 ACP 执行整改并复测。只要插件返回了下一次跟进时间，主会话就必须把“下一次自动回来”真正安排好：优先调用 `automation_update` 为当前线程创建、刷新或取消 `kind=heartbeat` 的真实后续唤醒（`mode=create`/`update`/`delete`、`kind=heartbeat`、`destination=thread`、`status=ACTIVE`）；如果当前真实 Codex CLI 宿主没有这个工具，就不得结束当前轮，必须在同一轮保留等待窗口并到点后自动回到同一个任务闭环重新检查状态。运行态只要 next_action_required 仍包含 status，就必须继续按 follow_up_policy 持续跟进；当 NEEDS_USER_DECISION 允许超时默认继续时，也必须保留真实的 60 秒决策窗口，并在超时后重新检查状态再按 timeout_default 恢复等待。禁止结束当前轮后再依赖用户手动补触发或口头承诺冒充自动继续；只有进入非运行态，或 NEEDS_USER_DECISION 且 next_action_required 不包含 continue_wait 时，才停止持续跟进并向用户输出 user_message。",
       inputSchema: z.object({
         workspace_path: z.string(),
         requirement_text: z.string(),

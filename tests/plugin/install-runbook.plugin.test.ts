@@ -37,23 +37,24 @@ describe("PT-00 install runbook contract", () => {
     expect(runbook).not.toContain("npm run skill:install-local");
   });
 
-  it("should treat heartbeat availability as a delivery-test gate in the must-pass table", async () => {
+  it("should treat real auto-follow-up availability as a delivery-test gate in the must-pass table", async () => {
     const checklist = await readFile(
       join(root, "docs", "团队委派交付测试必过表.md"),
       "utf8"
     );
 
-    expect(checklist).toContain("Heartbeat 前置门禁");
+    expect(checklist).toContain("自动继续前置门禁");
     expect(checklist).toContain("automation_update");
     expect(checklist).toContain("kind=heartbeat");
     expect(checklist).toContain("destination=thread");
     expect(checklist).toContain("status=ACTIVE");
-    expect(checklist).toContain("DT-01、DT-02、DT-05、DT-12、DT-13 一律判失败");
+    expect(checklist).toContain("同一轮里自动回到同一个任务闭环");
+    expect(checklist).toContain("既没有 heartbeat 能力，也没有同轮自动续跑能力");
     expect(checklist).toContain("当前环境无法建立真实自动跟进");
     expect(checklist).toContain("禁止再对用户承诺“我会继续跟进”");
     expect(checklist).toContain("手动重复触发 `status`");
-    expect(checklist).toContain("sleep");
-    expect(checklist).toContain("Start-Sleep");
+    expect(checklist).toContain("人工补发消息");
+    expect(checklist).toContain("再次点击“再跟踪”");
   });
 
   it("should expose install/uninstall commands in package scripts", async () => {
