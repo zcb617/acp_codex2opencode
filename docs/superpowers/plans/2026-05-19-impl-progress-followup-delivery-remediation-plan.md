@@ -21,10 +21,10 @@
 
 | 设计目标 | 实施任务 | 自动化验证 | 交付测试验证 | 状态 |
 |---|---|---|---|---|
-| G1：实施或整改实施首轮必须先暴露运行态 | Task 01、Task 02 | UT-01、UT-02、UT-03 | DT-01、DT-02、DT-10 | 待实施 |
-| G2：implementation/rework 快速完成时，后续才进入交付测试 | Task 01、Task 02 | UT-04、UT-05 | DT-08 | 待实施 |
-| G3：文档与交付测试材料必须如实表达 heartbeat 前提 | Task 03 | UT-06 | DT-12、DT-13 | 待实施 |
-| G4：宿主缺少 heartbeat 工具时不能误判交付通过 | Task 03、Task 04 | UT-07 | DT-01、DT-02、DT-05、DT-12、DT-13 | 待实施 |
+| G1：实施或整改实施首轮必须先暴露运行态 | Task 01、Task 02 | UT-01、UT-02、UT-03 | DT-01、DT-02、DT-10 | 已完成 |
+| G2：implementation/rework 快速完成时，后续才进入交付测试 | Task 01、Task 02 | UT-04、UT-05 | DT-08 | 已完成 |
+| G3：文档与交付测试材料必须如实表达 heartbeat 前提 | Task 03 | UT-06 | DT-12、DT-13 | 已完成 |
+| G4：宿主缺少 heartbeat 工具时不能误判交付通过 | Task 03、Task 04 | UT-07 | DT-01、DT-02、DT-05、DT-12、DT-13 | 已完成 |
 
 ## 3. 实施任务拆分
 
@@ -341,11 +341,14 @@ codex plugin list
 ## 9. 上下文恢复说明
 
 - 当前进度：
-  - 整改设计与整改计划文档已落盘，等待用户确认。
+  - 整改设计、整改计划已落盘，用户已确认执行模型并进入实施阶段。
+  - 核心编码实施已完成：bridge-service.ts 首轮运行态暴露逻辑已修复；README/SKILL.md/交付测试必过表已同步。
+  - 自动化验证全部通过（单元测试 102 passed / delivery 测试 14 passed / build passed / 插件安装 passed）。
+  - 真实 Codex CLI 交付测试（DT-01 到 DT-13）尚未执行；需在真实 CLI 会话中用自然语言重走同链路完成最终验收。
 - 下一步：
-  1. 你确认后，我再新建分支进入编码实施。
-  2. 实施完成后先跑自动化验证，再用真实 Codex CLI 重走同链路交付测试。
+  1. 用真实 Codex CLI 入口发起团队委派，验证 implementation 首轮先暴露 `RUNNING_IMPLEMENTATION`。
+  2. 若宿主具备 heartbeat 工具，继续复测 DT-01 到 DT-13；若不具备，记录环境阻塞事实。
 - 恢复入口：
   - 先打开 `docs/superpowers/specs/2026-05-19-impl-progress-followup-delivery-remediation-design.md` 与本计划；
-  - 再从真实 Codex CLI 链路复现“implementation 首轮直接跳等待交付测试”的失败事实；
-  - 进入实施后，必须先修复首轮运行态暴露，再继续验证自动持续跟进是否满足真实宿主前提。
+  - 在真实 Codex CLI 中输入自然语言触发团队委派实施，观察首轮运行态暴露；
+  - 区分"仓库逻辑已修复"与"环境前提仍缺失"。
