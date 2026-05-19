@@ -77,7 +77,7 @@ Design / Planning 阶段必须读取本 skill 自带 `docs/` 目录里的对应�
 9. **计划必须对齐方案来源。** Planning 不能凭空写；如果 Design 是主会话刚生成的文件，重新 `start` 进入 Planning 时必须在 `requirement_text` 写明该方案文件路径，并在写计划前读取该文件；如果方案是用户直接提供的正文，计划必须以该正文为依据。
 10. **不要主动传短超时。** 正常业务流程不要传 `timeout_ms`；除非用户明确要求限制等待时间，否则让插件使用安装时配置的长轮次超时。
 11. **实施阶段必须满足 1-2 分钟持续跟进节奏。** 这个节奏是硬性流程要求，不是可选项；未到下一次持续跟进时间，禁止提前向用户输出暂无进展；无进展决策点必须先提示用户。
-12. **用户决策提示后必须先停住等待。** 当 `user_decision_policy.allow_timeout_default=true` 时，主会话先提示用户二选一并停住等待用户输入；超时默认继续由后续跟进周期触发，调用 `continue_wait` 时传 `decision_source=timeout_default`。禁止在当前轮用 `Start-Sleep` 或其他阻塞命令模拟倒计时并自推进。
+12. **用户决策提示后必须先停住等待。** 当 `user_decision_policy.allow_timeout_default=true` 时，主会话先提示用户二选一并停住等待用户输入；同时必须为当前线程安排一次真实的后续唤醒（例如线程 heartbeat），在 `user_decision_policy.timeout_default_after_seconds` 秒后重新检查状态。超时默认继续由这次后续唤醒触发，调用 `continue_wait` 时传 `decision_source=timeout_default`。禁止在当前轮用 `Start-Sleep` 或其他阻塞命令模拟倒计时并自推进。
 13. **实施完成不等于交付完成。** 计划实施完成后必须进入真实业务交付测试；只有交付测试通过后，才能向用户声明完成。
 14. **交付测试失败必须由主会话制定整改方案和整改计划。** 失败后主会话必须提交失败材料，并基于失败材料生成整改方案和整改计划；用户确认后，才调用 `remediation_approve` 把完整整改方案和整改计划交给 ACP 执行整改。ACP 不负责制定该方案。
 15. **ACP 整改次数固定为 3 次。** 整改次数由插件状态机控制，不能由 LLM 或调用参数决定；完成 3 次整改后仍未通过，只能由主会话接手整改或取消后续工作。
@@ -176,7 +176,7 @@ digraph team_delegate_flow {
 ### 4) `RUNNING_DESIGN` / `RUNNING_PLANNING` / `RUNNING_IMPLEMENTATION`
 
 1. 先遵循同步窗口（由插件内部处理）。
-2. 然后必须按 `follow_up_policy.next_follow_up_at` 持续跟进；间隔必须落在 `follow_up_policy.interval_min_seconds` 到 `follow_up_policy.interval_max_seconds` 之间，当前要求是 1-2 分钟。
+2. 然后必须按插件返回的下一次跟进时间持续跟进：运行态看 `follow_up_policy.next_follow_up_at`，间隔必须落在 `follow_up_policy.interval_min_seconds` 到 `follow_up_policy.interval_max_seconds` 之间，当前要求是 1-2 分钟；进入用户决策且允许默认继续时，看 `user_decision_policy.timeout_default_deadline_at`，该时间点就是下一次自动跟进时间。
 3. 每次 `status` 返回后，先看 `progress_update.has_new_output`：
    - 若为 `true`，用中文向用户输出一段简短进展总结，不粘贴完整原始过程。
    - 若为 `true`，继续等待，不询问是否接手。
@@ -185,10 +185,10 @@ digraph team_delegate_flow {
    - `continue_wait`
    - `handoff_to_main`
 5. 每次进入 `NEEDS_USER_DECISION` 都必须先提示用户选择，不能静默跳过提示。
-6. 如果 `user_decision_policy.allow_timeout_default=true`，主会话必须告诉用户：如果 `user_decision_policy.timeout_default_after_seconds` 秒内没有选择，将默认继续等待。提示后主会话应停住等待用户输入，不得在当前轮阻塞倒计时自推进。用户在超时前选择 `continue_wait` 时调用 `action=continue_wait` 且传 `decision_source=user_selected`；超时后由后续跟进周期触发默认继续时调用 `action=continue_wait` 且传 `decision_source=timeout_default`。
+6. 如果 `user_decision_policy.allow_timeout_default=true`，主会话必须告诉用户：如果 `user_decision_policy.timeout_default_after_seconds` 秒内没有选择，将默认继续等待。提示后主会话应停住等待用户输入，不得在当前轮阻塞倒计时自推进；同时必须为当前线程安排一次真实的后续唤醒（例如线程 heartbeat），确保超时后还能再进一轮状态检查。用户在超时前选择 `continue_wait` 时调用 `action=continue_wait` 且传 `decision_source=user_selected`；超时后由这次后续唤醒先重新调用 `status`，若仍满足默认继续条件，再调用 `action=continue_wait` 且传 `decision_source=timeout_default`。
 7. 如果 `user_decision_policy.allow_timeout_default=false`，主会话必须停住等待用户明确选择；不得再用超时默认动作继续。
 8. 连续无人响应默认继续的计数只由 `decision_source=timeout_default` 增加；用户明确选择 `continue_wait` 或 ACP 返回任意新进展都会清空该计数。这和 ACP 反复无响应触发错误弹窗后的执行端重置不是同一个机制，禁止混用。
-9. 用户选择 `continue_wait` 后，进入新的持续跟进周期；等待过程中只要 ACP 又输出内容，就恢复进展总结并清空旧的接手询问。
+9. 用户选择 `continue_wait` 后，进入新的持续跟进周期；等待过程中只要 ACP 又输出内容，就恢复进展总结并清空旧的接手询问。只要用户提前回复、任务离开 `NEEDS_USER_DECISION`，或 ACP 已恢复有效进展，就必须取消上一条默认继续用的后续唤醒，避免重复推进。
 10. 运行态只要 `next_action_required` 里仍有 `status`，就继续持续跟进；不能因为没有 `continue_wait` 就提前停住。
 11. 如果 `NEEDS_USER_DECISION` 返回后，`next_action_required` 里没有 `continue_wait`，代表当前任务已经不能继续等待；必须停止持续跟进，禁止继续调用 `status`，并立刻输出 `user_message`，让用户选择插件给出的下一步。
 

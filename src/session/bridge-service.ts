@@ -3464,7 +3464,14 @@ export class BridgeService {
     if (silenceMs >= workflow.silenceDecisionMs) {
       workflow.stage = "NEEDS_USER_DECISION";
       this.ensureUserDecisionWindow(workflow, nowMs);
-    } else if (workflow.stage !== "NEEDS_USER_DECISION") {
+      if (this.canUseTimeoutDefaultContinue(workflow) && workflow.userDecisionTimeoutAtMs !== undefined) {
+        this.scheduleDecisionTimeoutFollowUp(workflow, nowMs);
+      } else {
+        this.clearScheduledWorkflowFollowUp(workflow);
+      }
+      return;
+    }
+    if (workflow.stage !== "NEEDS_USER_DECISION") {
       this.clearUserDecisionWindow(workflow);
     }
     this.scheduleNextWorkflowPoll(workflow, nowMs, false);
@@ -3475,6 +3482,20 @@ export class BridgeService {
     workflow.lastCountedPollAtMs = undefined;
     workflow.currentPollCycle = Math.max(workflow.currentPollCycle || 0, 0) + 1;
     this.scheduleNextWorkflowPoll(workflow, Date.now(), false);
+  }
+
+  private scheduleDecisionTimeoutFollowUp(workflow: TaskWorkflowState, nowMs: number): void {
+    const timeoutAtMs = workflow.userDecisionTimeoutAtMs;
+    if (timeoutAtMs === undefined) {
+      workflow.nextPollDueAtMs = undefined;
+      return;
+    }
+    workflow.pollIntervalMs = Math.max(0, timeoutAtMs - nowMs);
+    workflow.nextPollDueAtMs = timeoutAtMs;
+  }
+
+  private clearScheduledWorkflowFollowUp(workflow: TaskWorkflowState): void {
+    workflow.nextPollDueAtMs = undefined;
   }
 
   private scheduleNextWorkflowPoll(
@@ -4236,16 +4257,30 @@ export class BridgeService {
   }
 
   private buildWorkflowBasePayload(workflow: TaskWorkflowState): Record<string, unknown> {
+    const userDecisionPolicy = this.buildUserDecisionPolicy(workflow);
+    const timeoutDefaultFollowUpAtMs =
+      workflow.stage === "NEEDS_USER_DECISION" && userDecisionPolicy.allow_timeout_default === true
+        ? workflow.userDecisionTimeoutAtMs
+        : undefined;
+    const effectiveNextPollDueAtMs = timeoutDefaultFollowUpAtMs ?? workflow.nextPollDueAtMs;
     const nextFollowUpAt =
-      workflow.nextPollDueAtMs !== undefined ? new Date(workflow.nextPollDueAtMs).toISOString() : undefined;
+      effectiveNextPollDueAtMs !== undefined ? new Date(effectiveNextPollDueAtMs).toISOString() : undefined;
+    const effectiveIntervalSeconds =
+      effectiveNextPollDueAtMs !== undefined
+        ? Math.max(0, Math.floor((effectiveNextPollDueAtMs - Date.now()) / 1000))
+        : Math.floor(workflow.pollIntervalMs / 1000);
     const followUpPolicy = {
-      interval_seconds: Math.floor(workflow.pollIntervalMs / 1000),
+      interval_seconds: effectiveIntervalSeconds,
       interval_min_seconds: Math.floor(workflow.pollIntervalMinMs / 1000),
       interval_max_seconds: Math.floor(workflow.pollIntervalMaxMs / 1000),
       no_progress_decision_seconds: Math.floor(workflow.silenceDecisionMs / 1000),
       next_follow_up_at: nextFollowUpAt,
       guidance:
-        "实施阶段必须满足 1-2 分钟持续跟进节奏；未到下一次持续跟进时间前，不向用户输出暂无进展。"
+        workflow.stage === "NEEDS_USER_DECISION"
+          ? userDecisionPolicy.allow_timeout_default === true
+            ? "当前已进入用户决策等待；若允许默认继续，下一次持续跟进时间就是默认继续截止时间，到点后主会话应再次检查状态。"
+            : "当前已进入用户决策等待；本阶段不再安排自动持续跟进，必须等待用户明确选择。"
+          : "实施阶段必须满足 1-2 分钟持续跟进节奏；未到下一次持续跟进时间前，不向用户输出暂无进展。"
     };
     const base = {
       task_id: workflow.taskId,
@@ -4271,7 +4306,7 @@ export class BridgeService {
       pending_remediation_plan: workflow.pendingRemediationPlan,
       last_implementation_result: workflow.lastImplementationResult,
       poll_policy: {
-        interval_seconds: Math.floor(workflow.pollIntervalMs / 1000),
+        interval_seconds: effectiveIntervalSeconds,
         interval_min_seconds: Math.floor(workflow.pollIntervalMinMs / 1000),
         interval_max_seconds: Math.floor(workflow.pollIntervalMaxMs / 1000),
         silence_timeout_seconds: Math.floor(workflow.silenceDecisionMs / 1000),
@@ -4283,7 +4318,7 @@ export class BridgeService {
         next_poll_due_at: nextFollowUpAt
       },
       follow_up_policy: followUpPolicy,
-      user_decision_policy: this.buildUserDecisionPolicy(workflow),
+      user_decision_policy: userDecisionPolicy,
       progress_update: this.toProgressUpdatePayload(workflow),
       phase_gates: this.toPhaseGatesPayload(workflow),
       steps: workflow.steps

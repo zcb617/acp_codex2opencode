@@ -68,16 +68,17 @@
 - `workflow_status`：`NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION` / `NEEDS_USER_INPUT` / `NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING` / `RUNNING_DESIGN` / `WAITING_DESIGN_APPROVAL` / `RUNNING_PLANNING` / `WAITING_PLAN_APPROVAL` / `RUNNING_IMPLEMENTATION` / `NEEDS_DELIVERY_TEST` / `DELIVERY_TEST_FAILED` / `RUNNING_REMEDIATION` / `NEEDS_REMEDIATION_DECISION` / `NEEDS_USER_DECISION` / `TRANSFERRED_TO_MAIN` / `CANCELLED` / `COMPLETED` / `FAILED`
 - `next_action_required`：下一步可执行动作
 - `current_model`：当前使用中的模型
-- `follow_up_policy`：当前持续跟进节奏（60-120 秒范围、5 分钟无新进展决策条件、下一次持续跟进时间）
+- `follow_up_policy`：当前持续跟进节奏（60-120 秒范围、5 分钟无新进展决策条件、下一次持续跟进时间；若进入允许默认继续的用户决策阶段，该时间会切到默认继续截止点）
 - `progress_update`：ACP 新输出增量；主会话应将其总结成简短中文进展，不直接粘贴完整原始过程
 
 `NEEDS_USER_DECISION` 处理约束：
 
 1. 先提示用户二选一并停住等待用户输入。
 2. 禁止在当前轮使用阻塞等待命令（如 `Start-Sleep`）模拟倒计时自推进。
-3. 当 `allow_timeout_default=true` 且超时未收到用户选择时，由后续跟进周期按 `decision_source=timeout_default` 自动进入新的等待周期。
+3. 当 `allow_timeout_default=true` 时，主会话必须为当前线程安排一次真实的后续唤醒；超时未收到用户选择时，由这次后续唤醒先重新检查状态，再按 `decision_source=timeout_default` 自动进入新的等待周期。
 4. 只要当前仍是运行态且 `next_action_required` 包含 `status`，主会话就必须继续按 `follow_up_policy.next_follow_up_at` 自动跟进；不能因为没有 `continue_wait` 就提前停住。
 5. 只有进入非运行态，或 `NEEDS_USER_DECISION` 且 `next_action_required` 不包含 `continue_wait` 时，主会话才停止持续跟进，并把插件返回的业务提示展示给用户。
+6. 只要用户提前回复、任务离开 `NEEDS_USER_DECISION`，或 ACP 已恢复有效进展，就必须取消上一条默认继续用的后续唤醒，避免重复推进。
 
 ## 业务交付闭环
 

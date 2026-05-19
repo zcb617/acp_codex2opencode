@@ -108,11 +108,15 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("decision_source=timeout_default");
     expect(skill).toContain("decision_source=user_selected");
     expect(skill).toContain("主会话先提示用户二选一并停住等待用户输入");
+    expect(skill).toContain("真实的后续唤醒");
+    expect(skill).toContain("线程 heartbeat");
+    expect(skill).toContain("重新调用 `status`");
     expect(skill).toContain("禁止在当前轮用 `Start-Sleep`");
     expect(skill).toContain("用户明确选择");
     expect(skill).toContain("ACP 返回任意新进展");
     expect(skill).toContain("清空该计数");
     expect(skill).toContain("不是同一个机制");
+    expect(skill).toContain("取消上一条默认继续用的后续唤醒");
   });
 
   it("must require main session to write remediation plan before ACP fixes delivery failures", async () => {

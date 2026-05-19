@@ -105,6 +105,9 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("allow_timeout_default");
     expect(skill).toContain("decision_source=timeout_default");
     expect(skill).toContain("decision_source=user_selected");
+    expect(skill).toContain("真实的后续唤醒");
+    expect(skill).toContain("线程 heartbeat");
+    expect(skill).toContain("重新调用 `status`");
     expect(skill).toContain("交付测试失败必须由主会话制定整改方案和整改计划");
     expect(skill).toContain("必须把完整整改方案和整改计划放入 `feedback_text`");
     expect(skill).toContain("ACP 只执行整改实施");
