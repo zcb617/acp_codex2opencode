@@ -177,6 +177,8 @@ digraph team_delegate_flow {
 
 1. 先遵循同步窗口（由插件内部处理）。
 2. 然后必须按插件返回的下一次跟进时间持续跟进：运行态看 `follow_up_policy.next_follow_up_at`，间隔必须落在 `follow_up_policy.interval_min_seconds` 到 `follow_up_policy.interval_max_seconds` 之间，当前要求是 1-2 分钟；进入用户决策且允许默认继续时，看 `user_decision_policy.timeout_default_deadline_at`，该时间点就是下一次自动跟进时间。
+   - 只要插件给出了下一次跟进时间，主会话就必须立刻为当前线程创建或刷新一次 heartbeat，让线程在该时间点自动再醒来。
+   - heartbeat 的提示内容必须只做一件事：回到同一个任务闭环，再调用 `delegate.task.execute` 查看当前状态；禁止改成新任务 `start`。
 3. 每次 `status` 返回后，先看 `progress_update.has_new_output`：
    - 若为 `true`，用中文向用户输出一段简短进展总结，不粘贴完整原始过程。
    - 若为 `true`，继续等待，不询问是否接手。
@@ -189,8 +191,9 @@ digraph team_delegate_flow {
 7. 如果 `user_decision_policy.allow_timeout_default=false`，主会话必须停住等待用户明确选择；不得再用超时默认动作继续。
 8. 连续无人响应默认继续的计数只由 `decision_source=timeout_default` 增加；用户明确选择 `continue_wait` 或 ACP 返回任意新进展都会清空该计数。这和 ACP 反复无响应触发错误弹窗后的执行端重置不是同一个机制，禁止混用。
 9. 用户选择 `continue_wait` 后，进入新的持续跟进周期；等待过程中只要 ACP 又输出内容，就恢复进展总结并清空旧的接手询问。只要用户提前回复、任务离开 `NEEDS_USER_DECISION`，或 ACP 已恢复有效进展，就必须取消上一条默认继续用的后续唤醒，避免重复推进。
-10. 运行态只要 `next_action_required` 里仍有 `status`，就继续持续跟进；不能因为没有 `continue_wait` 就提前停住。
-11. 如果 `NEEDS_USER_DECISION` 返回后，`next_action_required` 里没有 `continue_wait`，代表当前任务已经不能继续等待；必须停止持续跟进，禁止继续调用 `status`，并立刻输出 `user_message`，让用户选择插件给出的下一步。
+10. 运行态每次拿到新的 `follow_up_policy.next_follow_up_at` 后，都必须覆盖更新已有 heartbeat，不能保留旧时间点；否则会出现重复唤醒或按旧节奏误推进。
+11. 运行态只要 `next_action_required` 里仍有 `status`，就继续持续跟进；不能因为没有 `continue_wait` 就提前停住。
+12. 如果 `NEEDS_USER_DECISION` 返回后，`next_action_required` 里没有 `continue_wait`，代表当前任务已经不能继续等待；必须停止持续跟进，禁止继续调用 `status`，并立刻输出 `user_message`，让用户选择插件给出的下一步。
 
 ### 5) `WAITING_DESIGN_APPROVAL`
 

@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     "delegate.task.execute",
     {
       description:
-        "高层委派入口：按业务阶段推进方案、计划、实施、交付测试和整改闭环；实施完成后必须等待真实业务交付测试，通过后才完成；失败后由主会话生成整改方案和整改计划，用户确认后通过 remediation_approve 交给 ACP 执行整改并复测。运行态只要 next_action_required 仍包含 status，就必须继续按 follow_up_policy 持续跟进；当 NEEDS_USER_DECISION 允许超时默认继续时，主会话必须安排一次真实的后续唤醒，在超时后重新检查状态并按 timeout_default 恢复等待；只有进入非运行态，或 NEEDS_USER_DECISION 且 next_action_required 不包含 continue_wait 时，才停止持续跟进并向用户输出 user_message。",
+        "高层委派入口：按业务阶段推进方案、计划、实施、交付测试和整改闭环；实施完成后必须等待真实业务交付测试，通过后才完成；失败后由主会话生成整改方案和整改计划，用户确认后通过 remediation_approve 交给 ACP 执行整改并复测。只要插件返回了下一次跟进时间，主会话就必须为当前线程创建或刷新真实的后续唤醒；运行态只要 next_action_required 仍包含 status，就必须继续按 follow_up_policy 持续跟进；当 NEEDS_USER_DECISION 允许超时默认继续时，也必须沿用同一套后续唤醒机制，在超时后重新检查状态并按 timeout_default 恢复等待；只有进入非运行态，或 NEEDS_USER_DECISION 且 next_action_required 不包含 continue_wait 时，才停止持续跟进并向用户输出 user_message。",
       inputSchema: z.object({
         workspace_path: z.string(),
         requirement_text: z.string(),
