@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { MetricsRegistry } from "../observability/metrics.js";
@@ -1671,7 +1671,13 @@ export class BridgeService {
   }
 
   private normalizeWorkspaceKey(workspacePath: string): string {
-    const normalized = resolve(workspacePath).replace(/\\/g, "/");
+    const rawPath = workspacePath.trim();
+    if (win32.isAbsolute(rawPath)) {
+      const normalizedWindowsPath = win32.normalize(rawPath).replace(/\\/g, "/");
+      return normalizedWindowsPath.toLowerCase();
+    }
+
+    const normalized = resolve(rawPath).replace(/\\/g, "/");
     if (process.platform === "win32") {
       return normalized.toLowerCase();
     }
@@ -3349,14 +3355,31 @@ export class BridgeService {
 
   private extractMarkdownPaths(text: string, workspacePath: string): string[] {
     const candidates = new Set<string>();
-    const absolutePattern =
+    const windowsAbsolutePattern =
       /[A-Za-z]:[\\/](?:[^\s"'`<>|,;:，。；：、）)]+[\\/])*[^\s"'`<>|,;:，。；：、）)]+\.m(?:d|arkdown)/gi;
+    const posixAbsolutePattern =
+      /\/(?:[^\s"'`<>|,;:，。；：、）)]+\/)*[^\s"'`<>|,;:，。；：、）)]+\.m(?:d|arkdown)/gi;
     const relativePattern =
       /(?:\.{1,2}[\\/][^\s"'`<>|,;:，。；：、）)]+\.m(?:d|arkdown)|(?:[A-Za-z0-9_.-]+[\\/])+(?:[^\s"'`<>|,;:，。；：、）)]+\.m(?:d|arkdown)))/gi;
     const sanitize = (value: string): string => value.replace(/[),.;，。；：、）]+$/g, "");
     const absoluteSpans: Array<{ start: number; end: number }> = [];
 
-    for (const match of text.matchAll(absolutePattern)) {
+    for (const match of text.matchAll(windowsAbsolutePattern)) {
+      if (match.index === undefined) {
+        continue;
+      }
+      const candidate = sanitize(match[0]);
+      if (win32.isAbsolute(candidate)) {
+        candidates.add(win32.normalize(candidate));
+      } else {
+        candidates.add(resolve(candidate));
+      }
+      absoluteSpans.push({
+        start: match.index,
+        end: match.index + match[0].length
+      });
+    }
+    for (const match of text.matchAll(posixAbsolutePattern)) {
       if (match.index === undefined) {
         continue;
       }
@@ -3379,6 +3402,10 @@ export class BridgeService {
       }
       const candidate = sanitize(match[0]);
       if (/^https?:\/\//i.test(candidate)) {
+        continue;
+      }
+      if (win32.isAbsolute(candidate)) {
+        candidates.add(win32.normalize(candidate));
         continue;
       }
       if (isAbsolute(candidate)) {
