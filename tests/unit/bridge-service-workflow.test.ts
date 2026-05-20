@@ -417,9 +417,25 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
     expect((start.data as { business_stage: string }).business_stage).toBe("计划修订");
     expect((start.data as { user_message: string }).user_message).toContain("计划文档");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("指南");
     expect((start.data as { missing_sections: string[] }).missing_sections.some((item) => item.includes("Task 明细"))).toBe(
       true
     );
+    expect(
+      (start.data as {
+        document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+      }).document_revision_instruction.guide_relative_path
+    ).toBe("docs/可交付开发计划编写指南-v0.1.md");
+    expect(
+      (start.data as {
+        document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+      }).document_revision_instruction.document_type
+    ).toBe("planning");
+    expect(
+      (start.data as {
+        document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+      }).document_revision_instruction.development_type
+    ).toBe("feature");
     expect(hacked.listConfiguredModelsFromOpencode as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
@@ -451,6 +467,106 @@ describe("bridge workflow approvals", () => {
     );
     expect(hacked.listConfiguredModelsFromOpencode as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it("should include the correct design guideline when a design document needs revision", async () => {
+    const cases = [
+      {
+        developmentType: "bugfix" as const,
+        sessionAlias: "task-design-guide-bugfix",
+        expectedGuide: "docs/可交付BUG修改设计文档编写指南-v0.1.md"
+      },
+      {
+        developmentType: "feature" as const,
+        sessionAlias: "task-design-guide-feature",
+        expectedGuide: "docs/可交付开发设计文档编写指南-v0.1.md"
+      }
+    ];
+
+    for (const testCase of cases) {
+      const service = mockBridgeService();
+      const start = await startAndConfirmModel(service, {
+        workspace_path: "D:/repo",
+        requirement_text: START_FROM_DESIGN_REQUIREMENT,
+        session_alias: testCase.sessionAlias,
+        start_phase: "design",
+        design_planning_executor: "acp",
+        development_type: testCase.developmentType
+      });
+
+      expect((start.data as { workflow_status: string }).workflow_status).toBe("WAITING_DESIGN_APPROVAL");
+      expect((start.data as { business_stage: string }).business_stage).toBe("方案确认");
+      expect((start.data as { next_business_action: string }).next_business_action).toContain("指南");
+      expect(
+        (start.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.guide_relative_path
+      ).toBe(testCase.expectedGuide);
+      expect(
+        (start.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.document_type
+      ).toBe("design");
+      expect(
+        (start.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.development_type
+      ).toBe(testCase.developmentType);
+    }
+  });
+
+  it("should include the correct planning guideline when a plan document needs revision", async () => {
+    const cases = [
+      {
+        developmentType: "bugfix" as const,
+        sessionAlias: "task-plan-guide-bugfix",
+        expectedGuide: "docs/可交付BUG修改计划编写指南-v0.1.md"
+      },
+      {
+        developmentType: "feature" as const,
+        sessionAlias: "task-plan-guide-feature",
+        expectedGuide: "docs/可交付开发计划编写指南-v0.1.md"
+      }
+    ];
+
+    for (const testCase of cases) {
+      const service = mockBridgeService();
+      await startAndConfirmModel(service, {
+        workspace_path: "D:/repo",
+        requirement_text: START_FROM_DESIGN_REQUIREMENT,
+        session_alias: testCase.sessionAlias,
+        start_phase: "design",
+        design_planning_executor: "acp",
+        development_type: testCase.developmentType
+      });
+
+      const planning = await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: START_FROM_DESIGN_REQUIREMENT,
+        session_alias: testCase.sessionAlias,
+        action: "design_approve"
+      });
+
+      expect(planning.success).toBe(true);
+      expect((planning.data as { workflow_status: string }).workflow_status).toBe("WAITING_PLAN_APPROVAL");
+      expect((planning.data as { business_stage: string }).business_stage).toBe("计划确认");
+      expect((planning.data as { next_business_action: string }).next_business_action).toContain("指南");
+      expect(
+        (planning.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.guide_relative_path
+      ).toBe(testCase.expectedGuide);
+      expect(
+        (planning.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.document_type
+      ).toBe("planning");
+      expect(
+        (planning.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.development_type
+      ).toBe(testCase.developmentType);
+    }
   });
 
   it("should block planning approve before design approve", async () => {

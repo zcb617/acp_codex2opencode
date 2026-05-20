@@ -132,6 +132,7 @@ type WorkflowPhase = "design" | "planning" | "implementation" | "rework";
 type WorkflowEntryPhase = "design" | "planning" | "implementation";
 type DesignPlanningExecutor = "main" | "acp";
 type DevelopmentType = "feature" | "bugfix";
+type RevisableDocumentType = "design" | "planning";
 
 interface RequirementMiningPackageInput {
   objective?: string;
@@ -2048,6 +2049,15 @@ export class BridgeService {
     developmentDecision: DevelopmentTypeDecision,
     gate: ImplementationPlanningGateResult
   ): Record<string, unknown> {
+    const revisionInstruction =
+      developmentDecision.type === "need_user_input"
+        ? undefined
+        : this.buildDocumentRevisionInstruction(
+            developmentDecision.type,
+            "planning",
+            gate.missingSections,
+            "请先按对应计划指南补齐缺项，再重新发起 start 进入实施阶段。"
+          );
     const evidence = [
       `实施入口前置门禁已执行，已校验计划文档 ${gate.evaluatedPaths.length} 份。`,
       ...gate.evaluatedPaths.map((path) => `已校验计划文档：${path}`),
@@ -2061,13 +2071,20 @@ export class BridgeService {
       next_action_required: ["provide_context_then_restart"],
       business_stage: "计划修订",
       business_reason: "当前提供的计划文档不满足实施门禁，必须先补齐缺项后才能进入实施。",
-      next_business_action: "请先修订计划文档并补齐缺项，再重新发起 start 进入实施阶段。",
-      user_message: "计划文档还不满足实施要求。我已列出缺项，请先修订计划文档，确认后再进入实施。",
+      next_business_action:
+        revisionInstruction && typeof revisionInstruction.guide_relative_path === "string"
+          ? `请先对照 ${revisionInstruction.guide_relative_path} 修订计划文档并补齐缺项，再重新发起 start 进入实施阶段。`
+          : "请先修订计划文档并补齐缺项，再重新发起 start 进入实施阶段。",
+      user_message:
+        revisionInstruction && typeof revisionInstruction.guide_relative_path === "string"
+          ? `计划文档还不满足实施要求。我已列出缺项，请先对照 ${revisionInstruction.guide_relative_path} 修订后再进入实施。`
+          : "计划文档还不满足实施要求。我已列出缺项，请先修订计划文档，确认后再进入实施。",
       detected_start_phase: "implementation",
       detection_evidence: evidence,
       ...this.toDevelopmentDecisionPayload(developmentDecision),
       missing_context: ["请先修订计划文档并补齐缺项后再重试 implementation start。"],
-      missing_sections: gate.missingSections
+      missing_sections: gate.missingSections,
+      document_revision_instruction: revisionInstruction
     };
   }
 
@@ -2250,6 +2267,31 @@ export class BridgeService {
       planning_guide_relative_path: toSkillGuideRelativePath(profile.planningGuideFile),
       design_required_sections: profile.designRequiredSections,
       planning_required_sections: profile.planningRequiredSections
+    };
+  }
+
+  private buildDocumentRevisionInstruction(
+    developmentType: DevelopmentType,
+    documentType: RevisableDocumentType,
+    missingSections: string[],
+    nextStep?: string
+  ): Record<string, unknown> {
+    const profile = DOCUMENT_PROFILES[developmentType];
+    const isDesign = documentType === "design";
+    const guideFile = isDesign ? profile.designGuideFile : profile.planningGuideFile;
+    const requiredSections = isDesign ? profile.designRequiredSections : profile.planningRequiredSections;
+    return {
+      document_type: documentType,
+      development_type: developmentType,
+      guide_path: toInstalledSkillGuidePath(guideFile),
+      guide_relative_path: toSkillGuideRelativePath(guideFile),
+      required_sections: requiredSections,
+      missing_sections: missingSections,
+      next_step:
+        nextStep ??
+        (isDesign
+          ? "如需退回修订，请先对照对应方案指南补齐缺项，再通过 design_feedback 提交修订意见。"
+          : "如需退回修订，请先对照对应计划指南补齐缺项，再通过 planning_feedback 提交修订意见。")
     };
   }
 
@@ -4436,9 +4478,18 @@ export class BridgeService {
       };
     }
     if (workflow.stage === "WAITING_DESIGN_APPROVAL") {
+      const revisionInstruction = this.buildDocumentRevisionInstruction(
+        workflow.developmentType,
+        "design",
+        workflow.phaseGates.design?.missingSections ?? []
+      );
       return {
         ...base,
         current_stage: "DESIGN_REVIEW",
+        business_stage: "方案确认",
+        user_message: `方案文档已生成并通过基础门禁。请审阅；如果需要退回修订，请先对照 ${revisionInstruction.guide_relative_path} 再提交反馈。`,
+        next_business_action: `审阅方案文档；如需修订，请先对照 ${revisionInstruction.guide_relative_path} 校对后，再通过 design_feedback 提交修改意见。`,
+        document_revision_instruction: revisionInstruction,
         next_action_required: ["design_feedback", "design_approve"]
       };
     }
@@ -4453,9 +4504,18 @@ export class BridgeService {
       };
     }
     if (workflow.stage === "WAITING_PLAN_APPROVAL") {
+      const revisionInstruction = this.buildDocumentRevisionInstruction(
+        workflow.developmentType,
+        "planning",
+        workflow.phaseGates.planning?.missingSections ?? []
+      );
       return {
         ...base,
         current_stage: "PLANNING_REVIEW",
+        business_stage: "计划确认",
+        user_message: `计划文档已生成并通过基础门禁。请审阅；如果需要退回修订，请先对照 ${revisionInstruction.guide_relative_path} 再提交反馈。`,
+        next_business_action: `审阅计划文档；如需修订，请先对照 ${revisionInstruction.guide_relative_path} 校对后，再通过 planning_feedback 提交修改意见。`,
+        document_revision_instruction: revisionInstruction,
         next_action_required: ["planning_feedback", "planning_approve"]
       };
     }
