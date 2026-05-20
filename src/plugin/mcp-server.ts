@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { createLogger } from "../observability/logger.js";
 import { MetricsRegistry } from "../observability/metrics.js";
+import { ExecuteTaskSchema } from "../mcp-tools/schemas.js";
 import { DelegateTools } from "../mcp-tools/delegate-tools.js";
 import { BridgeService } from "../session/bridge-service.js";
 
@@ -77,62 +78,7 @@ async function main(): Promise<void> {
     {
       description:
         "高层委派入口：按业务阶段推进方案、计划、实施、交付测试和整改闭环；实施完成后必须等待真实业务交付测试，通过后才完成；失败后由主会话生成整改方案和整改计划，用户确认后通过 remediation_approve 交给 ACP 执行整改并复测。只要插件返回了下一次跟进时间，主会话就必须把“下一次自动回来”真正安排好：优先调用 `automation_update` 为当前线程创建、刷新或取消 `kind=heartbeat` 的真实后续唤醒（`mode=create`/`update`/`delete`、`kind=heartbeat`、`destination=thread`、`status=ACTIVE`）；如果当前真实 Codex CLI 宿主没有这个工具，就不得结束当前轮，必须在同一轮保留等待窗口并到点后自动回到同一个任务闭环重新检查状态。运行态只要 next_action_required 仍包含 status，就必须继续按 follow_up_policy 持续跟进；当 NEEDS_USER_DECISION 允许超时默认继续时，也必须保留真实的 60 秒决策窗口，并在超时后重新检查状态再按 timeout_default 恢复等待。禁止结束当前轮后再依赖用户手动补触发或口头承诺冒充自动继续；只有进入非运行态，或 NEEDS_USER_DECISION 且 next_action_required 不包含 continue_wait 时，才停止持续跟进并向用户输出 user_message。",
-      inputSchema: z.object({
-        workspace_path: z.string(),
-        requirement_text: z.string(),
-        requirements_package: z
-          .object({
-            objective: z.string(),
-            user_ideas: z.array(z.string()),
-            business_scenarios: z.array(z.string()),
-            in_scope: z.array(z.string()),
-            out_of_scope: z.array(z.string()),
-            constraints: z.array(z.string()),
-            acceptance_criteria: z.array(z.string()),
-            risks: z.array(z.string()),
-            open_questions: z.array(z.string()).optional(),
-            source: z.string().optional()
-          })
-          .optional(),
-        task_id: z.string().optional(),
-        session_alias: z.string().optional(),
-        design_planning_executor: z.enum(["main", "acp"]).optional(),
-        development_type: z.enum(["feature", "bugfix", "need_user_input"]).optional(),
-        development_type_reason: z.string().optional(),
-        development_type_evidence: z.array(z.string()).optional(),
-        model_confirm_choice: z.enum(["use_saved_model", "select_new_model"]).optional(),
-        selected_model: z.string().optional(),
-        start_phase: z.enum(["design", "planning", "implementation", "need_user_input"]).optional(),
-        start_phase_reason: z.string().optional(),
-        start_phase_evidence: z.array(z.string()).optional(),
-        missing_context: z.array(z.string()).optional(),
-        action: z
-          .enum([
-            "start",
-            "model_confirm",
-            "model_select",
-            "status",
-            "continue_wait",
-            "handoff_to_main",
-            "design_feedback",
-            "design_approve",
-            "planning_feedback",
-            "planning_approve",
-            "delivery_test_pass",
-            "delivery_test_fail",
-            "remediation_approve",
-            "restart_acp_session",
-            "cancel_follow_up"
-          ])
-          .optional(),
-        decision_source: z.enum(["user_selected", "timeout_default"]).optional(),
-        feedback_text: z.string().optional(),
-        preferred_model: z.string().optional(),
-        acceptance_criteria: z.string().optional(),
-        max_rework_rounds: z.number().int().min(0).max(10).optional(),
-        auto_close: z.boolean().optional(),
-        timeout_ms: z.number().int().positive().optional()
-      })
+      inputSchema: ExecuteTaskSchema
     },
     async (args) => toToolResponse(await tools.executeTask(args))
   );

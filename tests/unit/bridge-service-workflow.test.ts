@@ -333,6 +333,34 @@ describe("bridge workflow approvals", () => {
     expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
+  it("should restore cached requirement_text for model_confirm continuation", async () => {
+    const service = mockBridgeService();
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-cached-model-confirm",
+      action: "start",
+      start_phase: "design",
+      start_phase_reason: "用户还没有方案，需要先制定方案。",
+      development_type: "feature",
+      design_planning_executor: "acp"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
+
+    const confirmed = await service.executeTask({
+      workspace_path: "D:/repo",
+      session_alias: "task-cached-model-confirm",
+      action: "model_confirm",
+      model_confirm_choice: "use_saved_model"
+    });
+
+    expect(confirmed.success).toBe(true);
+    expect((confirmed.data as { workflow_status: string }).workflow_status).toBe("WAITING_DESIGN_APPROVAL");
+  });
+
   it("should require planning to read referenced design document paths", async () => {
     const service = mockBridgeService();
 
@@ -583,7 +611,7 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { current_model?: string }).current_model).toBe(
       "llm-router-openai-compatible/kimi-for-roo"
     );
-    expect((start.data as { current_agent_mode?: string }).current_agent_mode).toBe("plan");
+    expect((start.data as { current_agent_mode?: string }).current_agent_mode).toBeUndefined();
 
     const invalid = await service.executeTask({
       workspace_path: "D:/repo",
@@ -625,7 +653,7 @@ describe("bridge workflow approvals", () => {
     expect((implementationDone.data as { current_model?: string }).current_model).toBe(
       "llm-router-openai-compatible/kimi-for-roo"
     );
-    expect((implementationDone.data as { current_agent_mode?: string }).current_agent_mode).toBe("build");
+    expect((implementationDone.data as { current_agent_mode?: string }).current_agent_mode).toBeUndefined();
     expect((implementationDone.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
 
     const implementationStatus = await service.executeTask({

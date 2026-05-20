@@ -68,7 +68,7 @@ export interface CloseInput {
 
 export interface ExecuteTaskInput {
   workspace_path: string;
-  requirement_text: string;
+  requirement_text?: string;
   requirements_package?: RequirementMiningPackageInput;
   task_id?: string;
   session_alias?: string;
@@ -108,6 +108,10 @@ export type ExecuteTaskAction =
   | "remediation_approve"
   | "restart_acp_session"
   | "cancel_follow_up";
+
+type ExecuteTaskInputWithRequirement = ExecuteTaskInput & {
+  requirement_text: string;
+};
 
 type ContinueWaitDecisionSource = "user_selected" | "timeout_default";
 
@@ -1129,15 +1133,16 @@ export class BridgeService {
     taskId: string,
     workflowKey: string
   ): Promise<BridgeResult<unknown>> {
-    await this.cleanupExpiredOtherTaskWorkflows(input.workspace_path, taskId);
-    const startDecision = this.resolveStartPhaseDecision(input);
-    const developmentDecision = this.resolveDevelopmentTypeDecision(input);
+    const startInput = this.requireRequirementText(input, "start");
+    await this.cleanupExpiredOtherTaskWorkflows(startInput.workspace_path, taskId);
+    const startDecision = this.resolveStartPhaseDecision(startInput);
+    const developmentDecision = this.resolveDevelopmentTypeDecision(startInput);
     const existingWorkflow = await this.restoreExistingWorkflowForStart(workflowKey);
     if (existingWorkflow) {
       if (startDecision.phase === "implementation" && developmentDecision.type !== "need_user_input") {
         const gate = await this.evaluateImplementationPlanningGate(
-          input.workspace_path,
-          input.requirement_text,
+          startInput.workspace_path,
+          startInput.requirement_text,
           developmentDecision.type
         );
         if (gate.enforced && !gate.passed) {
@@ -1207,8 +1212,8 @@ export class BridgeService {
     this.pendingRequirementMiningByTask.delete(taskId);
     if (startDecision.phase === "implementation") {
       const gate = await this.evaluateImplementationPlanningGate(
-        input.workspace_path,
-        input.requirement_text,
+        startInput.workspace_path,
+        startInput.requirement_text,
         developmentDecision.type
       );
       if (gate.enforced && !gate.passed) {
@@ -1237,19 +1242,19 @@ export class BridgeService {
       return makeResult(
         requestId,
         this.buildNeedsMainPhaseResponse(
-          input.workspace_path,
+          startInput.workspace_path,
           sessionAlias,
           taskId,
           startDecision.phase,
-          input.requirement_text,
+          startInput.requirement_text,
           startDecision.evidence,
           developmentDecision
         )
       );
     }
 
-    await this.cachePendingStartInput(workflowKey, input, sessionAlias, taskId);
-    const modelGate = await this.resolveModelGate(input.workspace_path);
+    await this.cachePendingStartInput(workflowKey, startInput, sessionAlias, taskId);
+    const modelGate = await this.resolveModelGate(startInput.workspace_path);
     if (modelGate.savedModel && modelGate.savedModelAvailable) {
       await this.audit(requestId, "task.execute.start.needs-model-confirm", "codex", "OK", {
         sessionAlias,
@@ -1297,15 +1302,16 @@ export class BridgeService {
     workflowKey: string,
     timeoutMs: number | undefined
   ): Promise<BridgeResult<unknown>> {
+    const action: ExecuteTaskAction = "model_confirm";
     this.ensureWorkflowSlotAvailable(workflowKey);
     const choice = input.model_confirm_choice;
     if (!choice) {
       throw new BridgeError(ErrorCodes.INVALID_REQUEST, "model_confirm 需要 model_confirm_choice", false);
     }
-    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input);
+    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input, action);
     const startDecision = this.resolveStartPhaseDecision(effectiveInput);
     const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
-    const modelGate = await this.resolveModelGate(input.workspace_path);
+    const modelGate = await this.resolveModelGate(effectiveInput.workspace_path);
     if (choice === "select_new_model") {
       return makeResult(
         requestId,
@@ -1357,12 +1363,13 @@ export class BridgeService {
     workflowKey: string,
     timeoutMs: number | undefined
   ): Promise<BridgeResult<unknown>> {
+    const action: ExecuteTaskAction = "model_select";
     this.ensureWorkflowSlotAvailable(workflowKey);
     const selectedModel = input.selected_model?.trim();
     if (!selectedModel) {
       throw new BridgeError(ErrorCodes.INVALID_REQUEST, "model_select 需要 selected_model", false);
     }
-    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input);
+    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input, action);
     const startDecision = this.resolveStartPhaseDecision(effectiveInput);
     const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
     const modelGate = await this.resolveModelGate(effectiveInput.workspace_path);
@@ -1394,7 +1401,7 @@ export class BridgeService {
 
   private async startWorkflowAfterModelResolved(
     requestId: string,
-    input: ExecuteTaskInput,
+    input: ExecuteTaskInputWithRequirement,
     sessionAlias: string,
     taskId: string,
     workflowKey: string,
@@ -1440,7 +1447,7 @@ export class BridgeService {
       });
     }
 
-    const workflowInput: ExecuteTaskInput = {
+    const workflowInput: ExecuteTaskInputWithRequirement = {
       ...input,
       preferred_model: selectedModel
     };
@@ -1535,7 +1542,11 @@ export class BridgeService {
     }
   }
 
-  private async resolveEffectiveStartInput(workflowKey: string, input: ExecuteTaskInput): Promise<ExecuteTaskInput> {
+  private async resolveEffectiveStartInput(
+    workflowKey: string,
+    input: ExecuteTaskInput,
+    action: ExecuteTaskAction
+  ): Promise<ExecuteTaskInputWithRequirement> {
     let pending = this.pendingStartInputByKey.get(workflowKey);
     if (!pending) {
       try {
@@ -1554,14 +1565,43 @@ export class BridgeService {
       }
     }
     if (!pending) {
-      return input;
+      return this.requireRequirementText(
+        {
+          ...input,
+          action: "start"
+        },
+        action
+      );
     }
-    return {
+    return this.requireRequirementText(
+      {
       ...pending,
       ...input,
       action: "start",
       session_alias: input.session_alias ?? pending.session_alias,
       task_id: input.task_id ?? pending.task_id
+      },
+      action
+    );
+  }
+
+  private requireRequirementText(
+    input: ExecuteTaskInput,
+    action: ExecuteTaskAction
+  ): ExecuteTaskInputWithRequirement {
+    const requirementText = input.requirement_text?.trim();
+    if (!requirementText) {
+      throw new BridgeError(
+        ErrorCodes.INVALID_REQUEST,
+        action === "start"
+          ? "start 需要 requirement_text，用于创建任务并保存原始业务上下文。"
+          : `${action} 缺少 requirement_text，且当前未恢复到已缓存的原始任务上下文；请重新 start，或补充 requirement_text 后重试。`,
+        false
+      );
+    }
+    return {
+      ...input,
+      requirement_text: requirementText
     };
   }
 
@@ -4057,31 +4097,6 @@ export class BridgeService {
     );
   }
 
-  private async setWorkflowAgentMode(
-    workflow: TaskWorkflowState,
-    mode: "plan" | "build",
-    strict = false
-  ): Promise<void> {
-    const setResult = await this.setConfig({
-      bridge_session_id: workflow.bridgeSessionId,
-      config_id: "mode",
-      value: mode,
-      timeout_ms: workflow.timeoutMs
-    });
-    if (setResult.success) {
-      workflow.activeAgentMode = mode;
-      return;
-    }
-    if (strict) {
-      const error = setResult.error ?? {
-        code: ErrorCodes.CONFIG_VALUE_INVALID,
-        message: `切换会话模式失败: ${mode}`,
-        retryable: true
-      };
-      throw new BridgeError(error.code as ErrorCode, error.message, error.retryable);
-    }
-  }
-
   private async executeWorkflowTurnWithModelFallback(
     workflow: TaskWorkflowState,
     phaseLabel: string,
@@ -4099,7 +4114,7 @@ export class BridgeService {
   }
 
   private async startWorkflow(
-    input: ExecuteTaskInput,
+    input: ExecuteTaskInputWithRequirement,
     sessionAlias: string,
     taskId: string,
     timeoutMs: number | undefined,
@@ -4174,7 +4189,6 @@ export class BridgeService {
     };
 
     await this.selectInitialWorkflowModel(workflow, input.preferred_model);
-    await this.setWorkflowAgentMode(workflow, "plan", true);
     return workflow;
   }
 
@@ -4318,7 +4332,6 @@ export class BridgeService {
   }
 
   private async runImplementationPhase(workflow: TaskWorkflowState): Promise<Record<string, unknown>> {
-    await this.setWorkflowAgentMode(workflow, "build", true);
     const implementationResult = await this.executeWorkflowTurnWithModelFallback(
       workflow,
       "implementation",
@@ -4350,7 +4363,6 @@ export class BridgeService {
   }
 
   private async runRemediationImplementationPhase(workflow: TaskWorkflowState): Promise<void> {
-    await this.setWorkflowAgentMode(workflow, "build", true);
     const result = await this.executeWorkflowTurnWithModelFallback(
       workflow,
       `remediation-implementation-${workflow.remediationRound}`,

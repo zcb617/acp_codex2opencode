@@ -57,7 +57,7 @@ export const CloseSchema = z.object({
 
 export const ExecuteTaskSchema = z.object({
   workspace_path: z.string().min(1),
-  requirement_text: z.string().min(1),
+  requirement_text: z.string().min(1).optional(),
   requirements_package: RequirementMiningPackageSchema.optional(),
   task_id: z.string().min(1).optional(),
   session_alias: z.string().min(1).optional(),
@@ -99,6 +99,13 @@ export const ExecuteTaskSchema = z.object({
   timeout_ms: z.number().int().positive().max(MAX_TIMEOUT_MS).optional()
 }).superRefine((value, ctx) => {
   const action = value.action ?? "start";
+  if (action === "start" && !value.requirement_text?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["requirement_text"],
+      message: "start 动作必须提供 requirement_text"
+    });
+  }
   if (action !== "start" && !value.session_alias && !value.task_id) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
