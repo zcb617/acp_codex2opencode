@@ -100,6 +100,9 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("禁止把 `workflow_status`");
     expect(skill).toContain("实施阶段必须满足 1-2 分钟持续跟进节奏");
     expect(skill).toContain("禁止提前向用户输出暂无进展");
+    expect(skill).toContain("same-turn-hold 保活等待窗口");
+    expect(skill).toContain("不得额外输出");
+    expect(skill).toContain("保持安静");
     expect(skill).toContain("持续跟进");
     expect(skill).toContain("方案/计划必须落成文件");
     expect(skill).toContain("required_output_document.relative_path");
@@ -123,6 +126,9 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("手动补发消息");
     expect(skill).toContain("手动再点一次");
     expect(skill).toContain("既没有 heartbeat 能力，也无法把当前轮保活");
+    expect(skill).toContain("follow_up_runtime_requirement");
+    expect(skill).toContain("current_turn_must_stay_open_without_heartbeat");
+    expect(skill).toContain("hold_until");
     expect(skill).toContain("交付测试失败必须由主会话制定整改方案和整改计划");
     expect(skill).toContain("必须把完整整改方案和整改计划放入 `feedback_text`");
     expect(skill).toContain("ACP 只执行整改实施");
@@ -152,6 +158,10 @@ describe("PT-01 plugin install contract", () => {
     expect(mcpServerSource).toContain("不得结束当前轮");
     expect(mcpServerSource).toContain("同一轮保留等待窗口");
     expect(mcpServerSource).toContain("手动补触发");
+    expect(mcpServerSource).toContain("follow_up_runtime_requirement");
+    expect(mcpServerSource).toContain("current_turn_must_stay_open_without_heartbeat");
+    expect(mcpServerSource).toContain("静默保活等待窗口");
+    expect(mcpServerSource).toContain("持续跟进中");
 
     const readme = await readFile(join(root, "README.md"), "utf8");
     expect(readme).toContain("当前轮的第一优先动作");
@@ -161,6 +171,10 @@ describe("PT-01 plugin install contract", () => {
     expect(readme).toContain("不得结束当前轮");
     expect(readme).toContain("手动补发消息");
     expect(readme).toContain("同一轮保留等待窗口");
+    expect(readme).toContain("follow_up_runtime_requirement");
+    expect(readme).toContain("current_turn_must_stay_open_without_heartbeat");
+    expect(readme).toContain("静默保活等待窗口");
+    expect(readme).toContain("持续跟进中");
   });
 
   it("should package all design and planning guide docs with the team-delegate skill", async () => {

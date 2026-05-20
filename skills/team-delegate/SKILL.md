@@ -33,6 +33,11 @@ description: Use only when the user explicitly asks for delegation workflow/team
 3. 如果当前真实宿主没有 `automation_update`，但当前是一个持续运行的真实 Codex CLI 会话，就不得结束当前轮；必须把这次等待窗口保留在当前轮里，到点后自动回到同一个任务闭环重新查状态。
 4. 无论走 heartbeat 还是同轮等待，后续动作都只能回到同一个任务闭环重新查状态，不能改成新任务 `start`，也不能依赖用户手动补发消息、手动再点一次或人工重复触发。
 5. 只有在“既没有 heartbeat 能力，也无法把当前轮保活到下一次跟进时间点”时，才允许说明当前环境无法建立真实自动跟进，并把这次交付测试判为失败。
+6. 插件返回 `follow_up_runtime_requirement` 时，主会话必须按其中字段执行：
+   - `current_turn_must_stay_open_without_heartbeat=true`：没有 heartbeat 就不得结束当前轮。
+   - `hold_until`：当前轮至少保活到这个时间点。
+   - `recheck_action`：到点后在同一任务闭环里重新执行的动作，当前要求通常是 `status`。
+   - `post_recheck_timeout_default_action`：仅在默认继续等待场景使用；重新 `status` 后若条件仍成立，再按该动作继续。
 </REAL-FOLLOW-UP-FIRST>
 
 <BUSINESS-FIRST-OUTPUT>
@@ -193,15 +198,18 @@ digraph team_delegate_flow {
    - heartbeat 或同轮自动续跑的后续动作都必须只做一件事：回到同一个任务闭环，再调用 `delegate.task.execute` 查看当前状态；禁止改成新任务 `start`。
    - 若使用 heartbeat，提示内容里必须保留当前任务身份信息：`workspace_path`、`session_alias`、`task_id`（如果已有）。
    - 禁止在自动回来机制尚未安排好时就结束当前轮；也禁止用“稍后我再看”这种口头承诺代替真实自动回来。
+   - 若返回 payload 中 `follow_up_runtime_requirement.current_turn_must_stay_open_without_heartbeat=true`，且当前宿主没有 heartbeat，则必须严格按 `follow_up_runtime_requirement.hold_until` 保活当前轮，并在 `follow_up_runtime_requirement.recheck_action` 指定的动作上回到同一任务闭环。
 3. 每次 `status` 返回后，先看 `progress_update.has_new_output`：
    - 若为 `true`，用中文向用户输出一段简短进展总结，不粘贴完整原始过程。
    - 若为 `true`，继续等待，不询问是否接手。
    - 若为 `false` 且尚未进入 `NEEDS_USER_DECISION`，不得向用户输出暂无进展；继续按下一次持续跟进时间等待。
+   - 若为 `false` 且当前只是 same-turn-hold 保活等待窗口，也不得额外输出“持续跟进中”“仍在等待”“我会继续跟进”之类的重复等待提示；除非出现新进展、进入 `NEEDS_USER_DECISION`、离开运行态，或用户主动追问，否则保持安静。
 4. 只有 ACP 超过 `follow_up_policy.no_progress_decision_seconds` 仍无新进展后进入 `NEEDS_USER_DECISION`，才给二选一：
    - `continue_wait`
    - `handoff_to_main`
 5. 每次进入 `NEEDS_USER_DECISION` 都必须先提示用户选择，不能静默跳过提示。
 6. 如果 `user_decision_policy.allow_timeout_default=true`，主会话必须告诉用户：如果 `user_decision_policy.timeout_default_after_seconds` 秒内没有选择，将默认继续等待。提示后必须保留这 60 秒决策窗口：有 `automation_update` 就为当前线程安排一次 `kind=heartbeat` 的真实的后续唤醒；没有 `automation_update` 但当前真实 Codex CLI 会话还能继续运行，就在当前轮保留这 60 秒窗口，到点后先重新调用 `status`，若仍满足默认继续条件，再调用 `action=continue_wait` 且传 `decision_source=timeout_default`。用户在超时前明确选择 `continue_wait` 时调用 `action=continue_wait` 且传 `decision_source=user_selected`。禁止结束当前轮后再靠人工补触发冒充超时默认继续已经自动发生。
+   - 若返回 payload 中 `follow_up_runtime_requirement.post_recheck_timeout_default_action=continue_wait`，表示默认继续等待场景必须先重新执行 `status`，再决定是否调用 `continue_wait`。
 7. 如果 `user_decision_policy.allow_timeout_default=false`，主会话必须停住等待用户明确选择；不得再用超时默认动作继续。
 8. 连续无人响应默认继续的计数只由 `decision_source=timeout_default` 增加；用户明确选择 `continue_wait` 或 ACP 返回任意新进展都会清空该计数。这和 ACP 反复无响应触发错误弹窗后的执行端重置不是同一个机制，禁止混用。
 9. 用户选择 `continue_wait` 后，进入新的持续跟进周期；等待过程中只要 ACP 又输出内容，就恢复进展总结并清空旧的接手询问。只要用户提前回复、任务离开 `NEEDS_USER_DECISION`，或 ACP 已恢复有效进展，就必须调用 `automation_update(mode=delete)` 或等价取消动作，取消上一条默认继续用的后续唤醒，避免重复推进。

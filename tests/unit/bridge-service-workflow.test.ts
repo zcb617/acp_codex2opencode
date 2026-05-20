@@ -1231,6 +1231,20 @@ describe("bridge workflow approvals", () => {
     expect(policy.timeout_default_deadline_at).toEqual(expect.any(String));
     expect(policy.timeout_default_remaining_seconds).not.toBeNull();
     expect(policy.decision_prompted_at).toEqual(expect.any(String));
+    const followUpRuntime = (
+      status.data as {
+        follow_up_runtime_requirement: {
+          current_turn_must_stay_open_without_heartbeat: boolean;
+          fallback_mode_without_heartbeat: string | null;
+          recheck_action: string | null;
+          hold_until: string | null;
+        };
+      }
+    ).follow_up_runtime_requirement;
+    expect(followUpRuntime.current_turn_must_stay_open_without_heartbeat).toBe(true);
+    expect(followUpRuntime.fallback_mode_without_heartbeat).toBe("same_turn_hold");
+    expect(followUpRuntime.recheck_action).toBe("status");
+    expect(followUpRuntime.hold_until).toEqual(expect.any(String));
   });
 
   it("should auto-continue by timeout_default on a later status poll after the decision window expires", async () => {
@@ -1769,6 +1783,20 @@ describe("bridge workflow approvals", () => {
       "status"
     ]);
     expect((start.data as { user_message: string }).user_message).toContain("计划实施阶段");
+    const followUpRuntime = (
+      start.data as {
+        follow_up_runtime_requirement: {
+          current_turn_must_stay_open_without_heartbeat: boolean;
+          fallback_mode_without_heartbeat: string | null;
+          recheck_action: string | null;
+          hold_until: string | null;
+        };
+      }
+    ).follow_up_runtime_requirement;
+    expect(followUpRuntime.current_turn_must_stay_open_without_heartbeat).toBe(true);
+    expect(followUpRuntime.fallback_mode_without_heartbeat).toBe("same_turn_hold");
+    expect(followUpRuntime.recheck_action).toBe("status");
+    expect(followUpRuntime.hold_until).toEqual(expect.any(String));
 
     const status = await service.executeTask({
       workspace_path: "D:/repo",
@@ -1863,6 +1891,20 @@ describe("bridge workflow approvals", () => {
     expect(remediation.success).toBe(true);
     expect((remediation.data as { workflow_status: string }).workflow_status).toBe("RUNNING_REMEDIATION");
     expect((remediation.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+    const remediationFollowUpRuntime = (
+      remediation.data as {
+        follow_up_runtime_requirement: {
+          current_turn_must_stay_open_without_heartbeat: boolean;
+          fallback_mode_without_heartbeat: string | null;
+          recheck_action: string | null;
+          hold_until: string | null;
+        };
+      }
+    ).follow_up_runtime_requirement;
+    expect(remediationFollowUpRuntime.current_turn_must_stay_open_without_heartbeat).toBe(true);
+    expect(remediationFollowUpRuntime.fallback_mode_without_heartbeat).toBe("same_turn_hold");
+    expect(remediationFollowUpRuntime.recheck_action).toBe("status");
+    expect(remediationFollowUpRuntime.hold_until).toEqual(expect.any(String));
 
     const status = await service.executeTask({
       workspace_path: "D:/repo",

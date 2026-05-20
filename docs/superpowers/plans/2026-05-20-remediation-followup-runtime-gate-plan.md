@@ -50,6 +50,10 @@ G1、G4。
 
 - Git 分支环境。
 
+**对应交付场景：**
+
+- DT-01、DT-02、DT-04（保证实施改动在隔离分支内完成，便于同一链路复测与回退）。
+
 **实施步骤：**
 
 1. 基于当前 `main` 创建新分支，分支名前缀使用 `codex/`。
@@ -92,10 +96,15 @@ G1。
 
 - 设计文档第 4.2 节、第 6.1 节。
 
-**修改范围：**
+**文件范围：**
 
 - `src/session/bridge-service.ts`
 - 相关高层入口调用链
+
+**对应交付场景：**
+
+- DT-01、DT-02（implementation 与 remediation 的同规则跟进）。
+- DT-03（默认继续等待与运行态共用同一职责边界）。
 
 **实施步骤：**
 
@@ -139,10 +148,17 @@ G1、G2、G3。
 
 - 设计文档第 4.1 节、第 6.1 节、第 6.4 节。
 
-**修改范围：**
+**文件范围：**
 
 - `src/session/bridge-service.ts`
 - 高层 follow-up orchestration 入口
+
+**对应交付场景：**
+
+- DT-01（implementation 无 heartbeat 同轮保活）。
+- DT-02（remediation 无 heartbeat 同轮保活）。
+- DT-03（NEEDS_USER_DECISION 默认继续同轮保活）。
+- DT-04（全表复测一致性）。
 
 **实施步骤：**
 
@@ -188,12 +204,17 @@ G4。
 
 - 设计文档第 6.2 节、第 6.3 节。
 
-**修改范围：**
+**文件范围：**
 
 - `src/plugin/mcp-server.ts`
 - `skills/team-delegate/SKILL.md`
 - `README.md`
 - `docs/团队委派交付测试必过表.md`
+
+**对应交付场景：**
+
+- DT-01、DT-02、DT-03（用户可见规则与真实行为一致）。
+- DT-04（必过表与技能规则一致）。
 
 **实施步骤：**
 
@@ -205,11 +226,14 @@ G4。
 
 ```text
 输入：现有工具描述 + README + skill + 交付测试表
-replace misleading wording:
-  "没有 heartbeat 就可能无法继续"
-with correct wording:
-  "没有 heartbeat 就必须保持当前轮活着"
-sync same-turn-hold rule across all docs
+for each doc in [tool description, README, skill, 交付测试表]:
+  if doc contains "没有 heartbeat 就可能无法继续":
+    replace with "没有 heartbeat 就必须保持当前轮活着"
+  ensure doc contains:
+    - current_turn_must_stay_open_without_heartbeat
+    - hold_until + recheck_action 的同轮复查语义
+if any doc misses required rule:
+  fail delivery contract test and continue remediation
 输出：统一的产品规则与测试口径
 ```
 
@@ -236,11 +260,16 @@ G1、G2、G3、G4。
 
 - 设计文档第 4.3 节、第 8 节。
 
-**修改范围：**
+**文件范围：**
 
 - `tests/unit/bridge-service-workflow.test.ts`
 - `tests/delivery/team-delegate-skill.delivery.test.ts`
 - 必要时 `tests/plugin/install.plugin.test.ts` / `tests/plugin/install-runbook.plugin.test.ts`
+
+**对应交付场景：**
+
+- DT-01、DT-02、DT-03（根因路径直接回归）。
+- DT-04（交付契约与必过表一致）。
 
 **实施步骤：**
 
@@ -293,6 +322,10 @@ G4。
 - `runtime/...` 交付记录文件
 - 必要时补充 `docs/superpowers/...` 中的复测结论
 
+**对应交付场景：**
+
+- DT-01 到 DT-13（完整交付闭环必过项）。
+
 **实施步骤：**
 
 1. 在真实 Codex CLI 中分别准备 heartbeat 场景和无 heartbeat 场景。
@@ -339,7 +372,7 @@ if any required DT fails:
 
 ## 5. 自动化验证计划
 
-1. 精准红灯/回归测试
+1. 精准回归测试
 
 ```bash
 npm run test:unit -- tests/unit/bridge-service-workflow.test.ts -t "keep current round alive"
@@ -361,7 +394,7 @@ npm run test:delivery -- tests/delivery/team-delegate-skill.delivery.test.ts
 - workflow 主状态机未被破坏；
 - team-delegate 技能契约与实现保持一致。
 
-3. 全量验证
+3. 全量测试
 
 ```bash
 npm test
@@ -372,7 +405,17 @@ npm run prepare:plugin
 证明：
 - 仓库整体测试、构建、插件打包仍可通过。
 
-4. 安装与启用检查
+4. 编译或构建
+
+```bash
+npm run build
+npm run prepare:plugin
+```
+
+证明：
+- TypeScript 编译与插件构建链路可通过。
+
+5. 插件或安装检查
 
 ```bash
 npm run plugin:install-local
@@ -519,6 +562,18 @@ codex plugin list
 
 - 任一项失败即整体失败，补失败记录、补测试、补整改任务后重跑同链路。
 
+### 通过标准
+
+- DT-01 到 DT-13 全部通过，且不存在“主会话承诺自动跟进但当前轮已结束”的矛盾现象。
+- implementation、remediation、NEEDS_USER_DECISION 三条链路在 heartbeat 与无 heartbeat 模式下都满足既定规则。
+- 用户可见提示与实际行为一致，不依赖人工补触发。
+
+### 失败后整改与再测试
+
+- 任一 DT 项失败即判定本次交付测试失败，不得声明完成。
+- 先回填第 7 节失败记录字段，再补充修复任务与自动化回归。
+- 修复后必须从真实入口重跑同一业务链路，直到失败项全部转绿并更新复测结果。
+
 ## 7. 交付测试失败整改记录
 
 - 当前状态：待实施。
@@ -527,6 +582,16 @@ codex plugin list
   2. 若真实交付测试失败，必须记录失败发生在 heartbeat 路径还是无 heartbeat 的 same-turn-hold 路径、哪个业务阶段、哪条 DT 项。
   3. 若失败属于当前设计未覆盖的新现象，先补设计或登记新问题，再继续整改。
   4. 每次整改后重新执行自动化验证，再重新执行真实 Codex CLI 交付测试。
+
+- 失败记录模板（每次失败新增一条）：
+  - 失败场景：
+  - 输入数据（用户原话/触发语句）：
+  - 期望结果：
+  - 实际结果：
+  - 根因分析：
+  - 修复方案：
+  - 复测命令：
+  - 复测结果：
 
 ## 8. 设计完成核对清单
 
@@ -540,6 +605,15 @@ codex plugin list
 - [ ] 真实 Codex CLI 交付测试完成并逐项记录 DT-01 到 DT-13。
 
 ## 9. 上下文恢复说明
+
+- 当前进度：
+  - 方案与计划已落盘；
+  - 计划文档已补齐实施门禁缺项，等待重新进入 implementation start；
+  - 代码实施与交付测试尚未开始。
+
+- 恢复入口：
+  - 会话别名（任务名）：`remediation-followup-runtime-gate-live-20260520-161547`
+  - 重新发起命令语义：按同一任务名执行 `implementation start`，复用现有方案/计划文档。
 
 - 当前已经完成：
   - BUG 根因定位；

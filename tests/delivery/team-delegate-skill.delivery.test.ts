@@ -137,6 +137,23 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("既没有 heartbeat 能力，也无法把当前轮保活");
     expect(skill).toContain("当前环境无法建立真实自动跟进");
     expect(skill).toContain("交付测试判为失败");
+    expect(skill).toContain("follow_up_runtime_requirement");
+    expect(skill).toContain("current_turn_must_stay_open_without_heartbeat");
+    expect(skill).toContain("hold_until");
+    expect(skill).toContain("post_recheck_timeout_default_action");
+  });
+
+  it("must stay quiet while same-turn hold waits without new progress", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("progress_update.has_new_output");
+    expect(skill).toContain("same-turn-hold 保活等待窗口");
+    expect(skill).toContain("不得额外输出");
+    expect(skill).toContain("持续跟进中");
+    expect(skill).toContain("仍在等待");
+    expect(skill).toContain("我会继续跟进");
+    expect(skill).toContain("保持安静");
+    expect(skill).toContain("进入 `NEEDS_USER_DECISION`");
   });
 
   it("must require main session to write remediation plan before ACP fixes delivery failures", async () => {

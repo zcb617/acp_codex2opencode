@@ -79,9 +79,15 @@
 4. heartbeat 创建或刷新必须满足：`kind=heartbeat`、`destination=thread`、`status=ACTIVE`；如果当前真实 Codex CLI 宿主没有 `automation_update` 或等价 heartbeat 工具，就不得结束当前轮，必须在同一轮保留等待窗口并到点后自动回到同一个任务闭环。
 5. 不允许结束当前轮后再靠用户手动补发消息、手动再点一次、手动重复触发 `status`，或仅凭口头承诺来冒充自动持续跟进。
 6. 当 `allow_timeout_default=true` 时，60 秒默认继续也遵循同一条原则：优先走 heartbeat；没有 heartbeat 时，就在当前真实 CLI 会话里保留这 60 秒决策窗口，到点后重新检查状态，再按 `decision_source=timeout_default` 自动进入新的等待周期。
-7. 只要当前仍是运行态且 `next_action_required` 包含 `status`，主会话就必须继续按 `follow_up_policy.next_follow_up_at` 自动跟进；不能因为没有 `continue_wait` 就提前停住。
-8. 只有进入非运行态，或 `NEEDS_USER_DECISION` 且 `next_action_required` 不包含 `continue_wait` 时，主会话才停止持续跟进，并把插件返回的业务提示展示给用户。
-9. 只要用户提前回复、任务离开 `NEEDS_USER_DECISION`，或 ACP 已恢复有效进展，就必须取消上一条默认继续用的后续唤醒，避免重复推进。
+7. 返回 payload 中的 `follow_up_runtime_requirement` 是主会话执行自动跟进的结构化契约：
+   - `current_turn_must_stay_open_without_heartbeat=true`：没有 heartbeat 时，当前轮不得结束。
+   - `hold_until`：当前轮至少保活到该时间点。
+   - `recheck_action`：到点后在同一任务闭环里重新执行的动作，通常为 `status`。
+   - `post_recheck_timeout_default_action=continue_wait`：默认继续等待场景下，重新 `status` 后若条件仍成立，再执行 `continue_wait`。
+8. 运行态若 `progress_update.has_new_output=false` 且尚未进入 `NEEDS_USER_DECISION`，主会话必须静默保活等待窗口；不得额外输出“持续跟进中”“仍在等待”“我会继续跟进”之类的重复提示。
+9. 只要当前仍是运行态且 `next_action_required` 包含 `status`，主会话就必须继续按 `follow_up_policy.next_follow_up_at` 自动跟进；不能因为没有 `continue_wait` 就提前停住。
+10. 只有进入非运行态，或 `NEEDS_USER_DECISION` 且 `next_action_required` 不包含 `continue_wait` 时，主会话才停止持续跟进，并把插件返回的业务提示展示给用户。
+11. 只要用户提前回复、任务离开 `NEEDS_USER_DECISION`，或 ACP 已恢复有效进展，就必须取消上一条默认继续用的后续唤醒，避免重复推进。
 
 ## 业务交付闭环
 

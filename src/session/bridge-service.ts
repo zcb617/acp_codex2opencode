@@ -4435,6 +4435,11 @@ export class BridgeService {
         next_poll_due_at: nextFollowUpAt
       },
       follow_up_policy: followUpPolicy,
+      follow_up_runtime_requirement: this.buildFollowUpRuntimeRequirement(
+        workflow,
+        nextFollowUpAt,
+        userDecisionPolicy
+      ),
       user_decision_policy: userDecisionPolicy,
       progress_update: this.toProgressUpdatePayload(workflow),
       phase_gates: this.toPhaseGatesPayload(workflow),
@@ -4473,6 +4478,62 @@ export class BridgeService {
       last_timeout_default_auto_continue_at: workflow.lastTimeoutDefaultAutoContinueAt ?? null,
       guidance:
         "每次无进展决策都必须先提示用户并停住等待选择；允许默认继续时，由后续跟进周期在超时后触发 timeout_default 继续等待。用户明确选择或 ACP 返回新进展会清空连续无人响应计数。"
+    };
+  }
+
+  private buildFollowUpRuntimeRequirement(
+    workflow: TaskWorkflowState,
+    nextFollowUpAt: string | undefined,
+    userDecisionPolicy: Record<string, unknown>
+  ): Record<string, unknown> {
+    const waitingForDecision = workflow.stage === "NEEDS_USER_DECISION";
+    const allowTimeoutDefault = userDecisionPolicy.allow_timeout_default === true;
+    const pendingRunningStageExposure =
+      workflow.firstRunningStageExposurePending === "RUNNING_IMPLEMENTATION" ||
+      workflow.firstRunningStageExposurePending === "RUNNING_REMEDIATION";
+    const requiresRealFollowUp =
+      nextFollowUpAt !== undefined &&
+      (((this.isRunningStage(workflow.stage) && workflow.stage !== "NEEDS_USER_DECISION") ||
+        pendingRunningStageExposure) ||
+        (waitingForDecision && allowTimeoutDefault));
+
+    if (!requiresRealFollowUp) {
+      return {
+        required: false,
+        preferred_mode: null,
+        fallback_mode_without_heartbeat: null,
+        current_turn_must_stay_open_without_heartbeat: false,
+        hold_until: null,
+        recheck_action: null,
+        post_recheck_timeout_default_action: null,
+        guidance: "当前阶段没有强制自动跟进要求；主会话可按业务状态正常结束当前轮。"
+      };
+    }
+
+    if (waitingForDecision && allowTimeoutDefault) {
+      return {
+        required: true,
+        preferred_mode: "heartbeat",
+        fallback_mode_without_heartbeat: "same_turn_hold",
+        current_turn_must_stay_open_without_heartbeat: true,
+        hold_until: nextFollowUpAt,
+        recheck_action: "status",
+        post_recheck_timeout_default_action: "continue_wait",
+        guidance:
+          "如果宿主没有 heartbeat，当前轮不得结束；必须保活到 hold_until，并在同一任务闭环先重新调用 status，再按 timeout_default 规则决定是否 continue_wait。"
+      };
+    }
+
+    return {
+      required: true,
+      preferred_mode: "heartbeat",
+      fallback_mode_without_heartbeat: "same_turn_hold",
+      current_turn_must_stay_open_without_heartbeat: true,
+      hold_until: nextFollowUpAt,
+      recheck_action: "status",
+      post_recheck_timeout_default_action: null,
+      guidance:
+        "如果宿主没有 heartbeat，当前轮不得结束；必须保活到 hold_until，并在同一任务闭环重新调用 status 继续跟进。"
     };
   }
 
