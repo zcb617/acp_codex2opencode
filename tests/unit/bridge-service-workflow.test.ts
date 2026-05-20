@@ -204,15 +204,28 @@ async function startAndConfirmModel(
     start_phase_evidence?: string[];
     missing_context?: string[];
     design_planning_executor?: "main" | "acp";
+    implementation_executor?: "main" | "acp";
     development_type?: "feature" | "bugfix" | "need_user_input";
   }
 ): Promise<Awaited<ReturnType<BridgeService["executeTask"]>>> {
-  const start = await service.executeTask({
+  let start = await service.executeTask({
     development_type: "feature",
     ...input,
     action: "start"
   });
   expect(start.success).toBe(true);
+  if (
+    input.start_phase === "implementation" &&
+    (start.data as { workflow_status?: string }).workflow_status === "NEEDS_IMPLEMENTATION_EXECUTOR"
+  ) {
+    start = await service.executeTask({
+      development_type: "feature",
+      ...input,
+      action: "implementation_executor_select",
+      implementation_executor: input.implementation_executor ?? "acp"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(start.success).toBe(true);
+  }
   expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
 
   const confirmed = await service.executeTask({
@@ -419,11 +432,11 @@ describe("bridge workflow approvals", () => {
     });
 
     expect(start.success).toBe(true);
-    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
-    expect((start.data as { business_stage: string }).business_stage).toBe("计划实施");
-    expect((start.data as { user_message: string }).user_message).toContain("当前已经有了");
-    expect((start.data as { user_message: string }).user_message).toContain("计划实施");
-    expect((start.data as { user_message: string }).user_message).toContain("选择执行模型");
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_IMPLEMENTATION_EXECUTOR");
+    expect((start.data as { business_stage: string }).business_stage).toBe("实施执行方选择");
+    expect((start.data as { user_message: string }).user_message).toContain("当前方案和计划已经确认");
+    expect((start.data as { user_message: string }).user_message).toContain("主会话实施");
+    expect((start.data as { user_message: string }).user_message).toContain("ACP");
   });
 
   it("should block implementation start when referenced plan document fails strict gate", async () => {
@@ -649,17 +662,80 @@ describe("bridge workflow approvals", () => {
       action: "planning_approve"
     });
     expect(implementationDone.success).toBe(true);
-    expect((implementationDone.data as { workflow_status: string }).workflow_status).toBe("RUNNING_IMPLEMENTATION");
-    expect((implementationDone.data as { current_model?: string }).current_model).toBe(
-      "llm-router-openai-compatible/kimi-for-roo"
+    expect((implementationDone.data as { workflow_status: string }).workflow_status).toBe(
+      "NEEDS_IMPLEMENTATION_EXECUTOR"
     );
-    expect((implementationDone.data as { current_agent_mode?: string }).current_agent_mode).toBeUndefined();
-    expect((implementationDone.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+    expect((implementationDone.data as { business_stage: string }).business_stage).toBe("实施执行方选择");
+    expect((implementationDone.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "implementation_executor_select"
+    ]);
+
+    const mainImplementation = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002",
+      action: "implementation_executor_select",
+      implementation_executor: "main"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(mainImplementation.success).toBe(true);
+    expect((mainImplementation.data as { workflow_status: string }).workflow_status).toBe("TRANSFERRED_TO_MAIN");
+    expect((mainImplementation.data as { user_message: string }).user_message).toContain("主会话继续实施");
+
+    const invalidDeliveryFromMain = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002",
+      action: "delivery_test_pass",
+      feedback_text: "不应允许"
+    });
+    expect(invalidDeliveryFromMain.success).toBe(false);
+  });
+
+  it("should enter model gate only after choosing ACP for implementation", async () => {
+    const service = mockBridgeService();
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002-acp",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+
+    const planning = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002-acp",
+      action: "design_approve"
+    });
+    expect(planning.success).toBe(true);
+    expect((planning.data as { workflow_status: string }).workflow_status).toBe("WAITING_PLAN_APPROVAL");
+
+    const implementationChoice = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002-acp",
+      action: "planning_approve"
+    });
+    expect(implementationChoice.success).toBe(true);
+    expect((implementationChoice.data as { workflow_status: string }).workflow_status).toBe(
+      "NEEDS_IMPLEMENTATION_EXECUTOR"
+    );
+
+    const acpImplementation = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002-acp",
+      action: "implementation_executor_select",
+      implementation_executor: "acp"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(acpImplementation.success).toBe(true);
+    expect((acpImplementation.data as { workflow_status: string }).workflow_status).toBe("RUNNING_IMPLEMENTATION");
+    expect((acpImplementation.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
 
     const implementationStatus = await service.executeTask({
       workspace_path: "D:/repo",
       requirement_text: START_FROM_DESIGN_REQUIREMENT,
-      session_alias: "task-002",
+      session_alias: "task-002-acp",
       action: "status"
     });
     expect(implementationStatus.success).toBe(true);
@@ -668,7 +744,7 @@ describe("bridge workflow approvals", () => {
     const delivered = await service.executeTask({
       workspace_path: "D:/repo",
       requirement_text: START_FROM_DESIGN_REQUIREMENT,
-      session_alias: "task-002",
+      session_alias: "task-002-acp",
       action: "delivery_test_pass",
       feedback_text: "真实业务交付测试通过"
     });
@@ -692,7 +768,15 @@ describe("bridge workflow approvals", () => {
       action: "start"
     });
     expect(start.success).toBe(true);
-    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_IMPLEMENTATION_EXECUTOR");
+
+    const chooseAcp = await service.executeTask({
+      ...input,
+      action: "implementation_executor_select",
+      implementation_executor: "acp"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(chooseAcp.success).toBe(true);
+    expect((chooseAcp.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
 
     const done = await service.executeTask({
       ...input,

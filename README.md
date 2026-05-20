@@ -19,21 +19,21 @@
 
 1. 先在主对话判定起始阶段（`design` / `planning` / `implementation` / `need_user_input`）和开发类型（`feature` / `bugfix` / `need_user_input`），再调用 `delegate.task.execute(action=start)`。
 2. `start` 必须携带 `start_phase` 和 `development_type`（可选带 `start_phase_reason` / `start_phase_evidence` / `development_type_reason` / `development_type_evidence` / `missing_context`）。
-3. `start` 后先完成模型闸门（`NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION`），再进入 ACP 执行阶段。
+3. `start` 后按业务阶段进入对应闸门：方案/计划默认先走主会话执行选择；实施阶段先走“实施执行方选择”，只有用户选择 ACP 实施时才进入模型闸门（`NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION`）。
 4. 后续只能按 `next_action_required` 推进，不允许越级执行。
 
 你只需要给出需求文本，插件内部会按阶段执行并停等确认。运行阶段采用持续跟进：首次同步等待最长 3 分钟；即使 ACP 在这 3 分钟内完成，首轮响应也必须先暴露一次可观察的运行态（`RUNNING_IMPLEMENTATION` 或 `RUNNING_REMEDIATION`），不能直接跳到交付测试。后续必须按 1-2 分钟节奏持续跟进并返回增量进展供主会话总结；只有超过 5 分钟仍无新进展，才要求用户决定继续等待或主会话接手。
 
-1. `action=start`：先走模型闸门：
-   - 若存在且可用历史模型：返回 `NEEDS_MODEL_CONFIRM`
-   - 若历史模型不可用或不存在：返回 `NEEDS_MODEL_SELECTION`（附 `available_models`）
-2. `action=model_confirm`：确认是否继续使用历史模型（`use_saved_model` / `select_new_model`）
-3. `action=model_select`：提交本次使用模型（`selected_model`），并写入本地模型记录文件供后续校验
-4. 模型确认完成后，按主对话提供的 `start_phase` 分流：
+1. `action=start`：按主对话提供的 `start_phase` 分流：
    - `start_phase=design/planning`：默认返回主会话执行（`NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING`）
-   - `start_phase=implementation`：直接进入 ACP 委派执行
+   - `start_phase=implementation`：先返回实施执行方选择（`NEEDS_IMPLEMENTATION_EXECUTOR`）
    - `start_phase=need_user_input`：返回 `NEEDS_USER_INPUT`；先进入 `ian-think` 做目标对齐，再进入需求深挖（优先 `brainstorming`，不可用则走主会话兜底）并补齐 `requirements_package`
    - 如需让 ACP 执行 Design / Planning，可在 `start` 传 `design_planning_executor=acp`
+2. `action=implementation_executor_select`：提交实施执行方选择：
+   - `implementation_executor=main`：插件闭环到此结束，转由主会话继续实施
+   - `implementation_executor=acp`：进入模型闸门
+3. `action=model_confirm`：确认是否继续使用历史模型（`use_saved_model` / `select_new_model`）
+4. `action=model_select`：提交本次使用模型（`selected_model`），并写入本地模型记录文件供后续校验
 5. Design / Planning 文档规则按主对话提供的 `development_type` 分流：
    - `development_type=feature`：读取 `team-delegate` skill 自带 `docs/` 下的可交付开发设计/计划指南
    - `development_type=bugfix`：读取 `team-delegate` skill 自带 `docs/` 下的可交付 BUG 修改设计/计划指南
@@ -42,7 +42,7 @@
 7. `action=design_feedback`：按反馈修订 Design（仍停在待确认）
 8. `action=design_approve`：进入 Planning 文档产出（停在待确认）
 9. `action=planning_feedback`：按反馈修订 Planning（仍停在待确认）
-10. `action=planning_approve`：进入计划实施；实施完成后进入真实业务交付测试等待节点，不直接判定完成
+10. `action=planning_approve`：进入实施执行方选择，不再直接进入实施
 11. `action=continue_wait`：当返回 `NEEDS_USER_DECISION` 时，继续新的持续跟进周期
 12. `action=handoff_to_main`：当返回 `NEEDS_USER_DECISION` 时，转交主会话（自动取消并关闭 ACP 会话）
 13. `action=delivery_test_pass`：主会话已完成真实业务交付测试且测试通过，插件进入完成状态
@@ -65,7 +65,7 @@
 
 返回结果会包含：
 
-- `workflow_status`：`NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION` / `NEEDS_USER_INPUT` / `NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING` / `RUNNING_DESIGN` / `WAITING_DESIGN_APPROVAL` / `RUNNING_PLANNING` / `WAITING_PLAN_APPROVAL` / `RUNNING_IMPLEMENTATION` / `NEEDS_DELIVERY_TEST` / `DELIVERY_TEST_FAILED` / `RUNNING_REMEDIATION` / `NEEDS_REMEDIATION_DECISION` / `NEEDS_USER_DECISION` / `TRANSFERRED_TO_MAIN` / `CANCELLED` / `COMPLETED` / `FAILED`
+- `workflow_status`：`NEEDS_IMPLEMENTATION_EXECUTOR` / `NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION` / `NEEDS_USER_INPUT` / `NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING` / `RUNNING_DESIGN` / `WAITING_DESIGN_APPROVAL` / `RUNNING_PLANNING` / `WAITING_PLAN_APPROVAL` / `RUNNING_IMPLEMENTATION` / `NEEDS_DELIVERY_TEST` / `DELIVERY_TEST_FAILED` / `RUNNING_REMEDIATION` / `NEEDS_REMEDIATION_DECISION` / `NEEDS_USER_DECISION` / `TRANSFERRED_TO_MAIN` / `CANCELLED` / `COMPLETED` / `FAILED`
 - `next_action_required`：下一步可执行动作
 - `current_model`：当前使用中的模型
 - `follow_up_policy`：当前持续跟进节奏（60-120 秒范围、5 分钟无新进展决策条件、下一次持续跟进时间；若进入允许默认继续的用户决策阶段，该时间会切到默认继续截止点）
@@ -136,6 +136,12 @@ Design/Planning 执行方规则：
 
 1. 默认主会话执行（返回 1/2 选项，默认 1）。
 2. 选择 ACP 执行时，重新调用 `action=start` 并传 `design_planning_executor=acp`。
+
+Implementation 执行方规则：
+
+1. 计划确认后先返回 `NEEDS_IMPLEMENTATION_EXECUTOR`。
+2. 选择 `implementation_executor=main` 时，插件闭环在实施入口结束，后续编码、自动化测试、真实交付测试和失败修复全部由主会话负责。
+3. 选择 `implementation_executor=acp` 时，才进入 `NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION` 并继续原有 ACP 实施闭环。
 
 模型策略（固定单模型）：
 

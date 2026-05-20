@@ -62,6 +62,7 @@ export const ExecuteTaskSchema = z.object({
   task_id: z.string().min(1).optional(),
   session_alias: z.string().min(1).optional(),
   design_planning_executor: z.enum(["main", "acp"]).optional(),
+  implementation_executor: z.enum(["main", "acp"]).optional(),
   development_type: z.enum(["feature", "bugfix", "need_user_input"]).optional(),
   development_type_reason: z.string().min(1).optional(),
   development_type_evidence: z.array(z.string().min(1)).optional(),
@@ -74,6 +75,7 @@ export const ExecuteTaskSchema = z.object({
   action: z
     .enum([
       "start",
+      "implementation_executor_select",
       "model_confirm",
       "model_select",
       "status",
@@ -147,6 +149,13 @@ export const ExecuteTaskSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["selected_model"],
       message: "model_select 动作必须提供 selected_model"
+    });
+  }
+  if (action === "implementation_executor_select" && !value.implementation_executor) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["implementation_executor"],
+      message: "implementation_executor_select 动作必须提供 implementation_executor"
     });
   }
 });

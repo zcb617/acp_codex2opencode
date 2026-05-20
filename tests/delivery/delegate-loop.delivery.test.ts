@@ -81,6 +81,15 @@ describe("DS-01~DS-03 delivery contracts", () => {
     });
     expect(handoff.action).toBe("handoff_to_main");
 
+    const implementationExecutor = ExecuteTaskSchema.parse({
+      workspace_path: "D:/repo/demo",
+      session_alias: "delegate-task-001",
+      action: "implementation_executor_select",
+      implementation_executor: "main"
+    });
+    expect(implementationExecutor.action).toBe("implementation_executor_select");
+    expect(implementationExecutor.implementation_executor).toBe("main");
+
     const deliveryPass = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
       session_alias: "delegate-task-001",
@@ -133,6 +142,14 @@ describe("DS-01~DS-03 delivery contracts", () => {
         workspace_path: "D:/repo/demo",
         session_alias: "delegate-task-001",
         action: "start"
+      })
+    ).toThrow();
+
+    expect(() =>
+      ExecuteTaskSchema.parse({
+        workspace_path: "D:/repo/demo",
+        session_alias: "delegate-task-001",
+        action: "implementation_executor_select"
       })
     ).toThrow();
   });

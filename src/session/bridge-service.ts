@@ -73,6 +73,7 @@ export interface ExecuteTaskInput {
   task_id?: string;
   session_alias?: string;
   design_planning_executor?: DesignPlanningExecutor;
+  implementation_executor?: ImplementationExecutor;
   development_type?: DevelopmentType | "need_user_input";
   development_type_reason?: string;
   development_type_evidence?: string[];
@@ -94,6 +95,7 @@ export interface ExecuteTaskInput {
 
 export type ExecuteTaskAction =
   | "start"
+  | "implementation_executor_select"
   | "model_confirm"
   | "model_select"
   | "status"
@@ -120,6 +122,7 @@ type WorkflowStage =
   | "WAITING_DESIGN_APPROVAL"
   | "RUNNING_PLANNING"
   | "WAITING_PLAN_APPROVAL"
+  | "NEEDS_IMPLEMENTATION_EXECUTOR"
   | "RUNNING_IMPLEMENTATION"
   | "NEEDS_DELIVERY_TEST"
   | "DELIVERY_TEST_FAILED"
@@ -135,6 +138,7 @@ type WorkflowStage =
 type WorkflowPhase = "design" | "planning" | "implementation" | "rework";
 type WorkflowEntryPhase = "design" | "planning" | "implementation";
 type DesignPlanningExecutor = "main" | "acp";
+type ImplementationExecutor = "main" | "acp";
 type DevelopmentType = "feature" | "bugfix";
 type RevisableDocumentType = "design" | "planning";
 
@@ -246,6 +250,8 @@ interface TaskWorkflowState {
   activeModel?: string;
   activeAgentMode?: "plan" | "build";
   fallbackModels: string[];
+  implementationExecutor?: ImplementationExecutor;
+  transferReason?: "implementation_executor_main" | "handoff_to_main" | "acp_session_unavailable";
   requirementText: string;
   detectedStartPhase: WorkflowEntryPhase;
   detectionEvidence: string[];
@@ -880,6 +886,19 @@ export class BridgeService {
         return await this.handleModelSelectAction(requestId, input, sessionAlias, taskId, workflowKey, timeoutMs);
       }
 
+      if (action === "implementation_executor_select") {
+        const existingWorkflow = await this.tryLoadWorkflowState(input.workspace_path, sessionAlias);
+        return await this.handleImplementationExecutorSelectionAction(
+          requestId,
+          input,
+          sessionAlias,
+          taskId,
+          workflowKey,
+          timeoutMs,
+          existingWorkflow
+        );
+      }
+
       const workflow = await this.loadWorkflowState(input.workspace_path, sessionAlias);
       if (action === "status") {
         await this.ensureWorkflowRuntimeContext(workflow);
@@ -923,6 +942,7 @@ export class BridgeService {
       }
 
       if (action === "handoff_to_main") {
+        workflow.transferReason = "handoff_to_main";
         const result = await this.handoffWorkflowToMain(workflow, timeoutMs);
         await this.persistWorkflowState(workflow);
         await this.audit(requestId, "task.execute.handoff-to-main", "codex", "OK", {
@@ -1051,15 +1071,7 @@ export class BridgeService {
       }
 
       this.assertWorkflowStage(workflow, ["WAITING_PLAN_APPROVAL"], action);
-      if (!(await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, false))) {
-        await this.persistWorkflowState(workflow);
-        return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
-      }
-      this.launchWorkflowPhase(workflow, "RUNNING_IMPLEMENTATION", "implementation", async () => {
-        workflow.lastImplementationResult = await this.runImplementationPhase(workflow);
-        this.enterDeliveryTestGate(workflow);
-      });
-      await this.waitForWorkflowShortSyncWindow(workflow);
+      this.enterImplementationExecutorGate(workflow);
       await this.persistWorkflowState(workflow);
       await this.audit(requestId, "task.execute.planning-approve", "codex", "OK", {
         sessionAlias,
@@ -1124,6 +1136,13 @@ export class BridgeService {
       return "acp";
     }
     return "main";
+  }
+
+  private resolveImplementationExecutor(input: ExecuteTaskInput): ImplementationExecutor | undefined {
+    if (input.implementation_executor === "main" || input.implementation_executor === "acp") {
+      return input.implementation_executor;
+    }
+    return undefined;
   }
 
   private async handleStartWithModelGate(
@@ -1228,6 +1247,18 @@ export class BridgeService {
           this.buildImplementationPlanGateNeedsInputResponse(sessionAlias, taskId, developmentDecision, gate)
         );
       }
+    }
+
+    const implementationExecutor = this.resolveImplementationExecutor(startInput);
+    if (startDecision.phase === "implementation" && implementationExecutor !== "acp") {
+      await this.cachePendingStartInput(workflowKey, startInput, sessionAlias, taskId);
+      await this.audit(requestId, "task.execute.start.needs-implementation-executor", "codex", "OK", {
+        sessionAlias
+      });
+      return makeResult(
+        requestId,
+        this.buildNeedsImplementationExecutorResponse(sessionAlias, taskId, "implementation_start")
+      );
     }
 
     const designPlanningExecutor = this.resolveDesignPlanningExecutor(input);
@@ -1399,6 +1430,133 @@ export class BridgeService {
     );
   }
 
+  private async handleImplementationExecutorSelectionAction(
+    requestId: string,
+    input: ExecuteTaskInput,
+    sessionAlias: string,
+    taskId: string,
+    workflowKey: string,
+    timeoutMs: number | undefined,
+    workflow: TaskWorkflowState | undefined
+  ): Promise<BridgeResult<unknown>> {
+    const implementationExecutor = this.resolveImplementationExecutor(input);
+    if (!implementationExecutor) {
+      throw new BridgeError(
+        ErrorCodes.INVALID_REQUEST,
+        "implementation_executor_select 需要 implementation_executor",
+        false
+      );
+    }
+
+    if (workflow) {
+      this.assertWorkflowStage(workflow, ["NEEDS_IMPLEMENTATION_EXECUTOR"], "implementation_executor_select");
+      workflow.implementationExecutor = implementationExecutor;
+      if (implementationExecutor === "main") {
+        workflow.transferReason = "implementation_executor_main";
+        const result = await this.handoffWorkflowToMain(workflow, timeoutMs);
+        await this.persistWorkflowState(workflow);
+        await this.audit(requestId, "task.execute.implementation-executor-select", "codex", "OK", {
+          sessionAlias,
+          bridgeSessionId: workflow.bridgeSessionId,
+          implementationExecutor
+        });
+        return makeResult(requestId, result);
+      }
+
+      if (!(await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, false))) {
+        await this.persistWorkflowState(workflow);
+        return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+      }
+      this.launchWorkflowPhase(workflow, "RUNNING_IMPLEMENTATION", "implementation", async () => {
+        workflow.lastImplementationResult = await this.runImplementationPhase(workflow);
+        this.enterDeliveryTestGate(workflow);
+      });
+      await this.waitForWorkflowShortSyncWindow(workflow);
+      await this.persistWorkflowState(workflow);
+      await this.audit(requestId, "task.execute.implementation-executor-select", "codex", "OK", {
+        sessionAlias,
+        bridgeSessionId: workflow.bridgeSessionId,
+        implementationExecutor
+      });
+      return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+    }
+
+    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input, "implementation_executor_select");
+    const startDecision = this.resolveStartPhaseDecision(effectiveInput);
+    const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
+    if (startDecision.phase !== "implementation") {
+      throw new BridgeError(
+        ErrorCodes.WORKFLOW_INVALID_TRANSITION,
+        "只有实施入口才能选择 implementation_executor",
+        false
+      );
+    }
+
+    if (implementationExecutor === "main") {
+      await this.clearPendingStartInput(workflowKey);
+      await this.audit(requestId, "task.execute.implementation-executor-select", "codex", "OK", {
+        sessionAlias,
+        implementationExecutor
+      });
+      return makeResult(
+        requestId,
+        this.buildTransferredToMainResponse(
+          sessionAlias,
+          taskId,
+          undefined,
+          "implementation_executor_main",
+          true
+        )
+      );
+    }
+
+    const startInputWithExecutor: ExecuteTaskInputWithRequirement = {
+      ...effectiveInput,
+      implementation_executor: "acp"
+    };
+    await this.cachePendingStartInput(workflowKey, startInputWithExecutor, sessionAlias, taskId);
+    const modelGate = await this.resolveModelGate(startInputWithExecutor.workspace_path);
+    if (modelGate.savedModel && modelGate.savedModelAvailable) {
+      await this.audit(requestId, "task.execute.implementation-executor-select.needs-model-confirm", "codex", "OK", {
+        sessionAlias,
+        implementationExecutor,
+        savedModel: modelGate.savedModel
+      });
+      return makeResult(
+        requestId,
+        this.buildNeedsModelConfirmResponse(
+          sessionAlias,
+          taskId,
+          modelGate.savedModel,
+          modelGate.availableModels,
+          startDecision,
+          developmentDecision
+        )
+      );
+    }
+
+    const reason = modelGate.savedModel
+      ? `历史模型 ${modelGate.savedModel} 已不可用，需要重新选择模型。`
+      : "未找到历史模型，请先选择要使用的模型。";
+    await this.audit(requestId, "task.execute.implementation-executor-select.needs-model-selection", "codex", "OK", {
+      sessionAlias,
+      implementationExecutor,
+      reason
+    });
+    return makeResult(
+      requestId,
+      this.buildNeedsModelSelectionResponse(
+        sessionAlias,
+        taskId,
+        modelGate.availableModels,
+        reason,
+        startDecision,
+        developmentDecision,
+        modelGate.savedModel
+      )
+    );
+  }
+
   private async startWorkflowAfterModelResolved(
     requestId: string,
     input: ExecuteTaskInputWithRequirement,
@@ -1410,6 +1568,7 @@ export class BridgeService {
   ): Promise<BridgeResult<unknown>> {
     const startDecision = this.resolveStartPhaseDecision(input);
     const developmentDecision = this.resolveDevelopmentTypeDecision(input);
+    const implementationExecutor = this.resolveImplementationExecutor(input);
     if (startDecision.phase === "need_user_input" || developmentDecision.type === "need_user_input") {
       await this.clearPendingStartInput(workflowKey);
       await this.audit(requestId, "task.execute.start.needs-user-input", "codex", "OK", {
@@ -1421,6 +1580,17 @@ export class BridgeService {
         ...this.buildNeedsUserInputResponse(sessionAlias, taskId, startDecision, developmentDecision),
         selected_model: selectedModel
       });
+    }
+    if (startDecision.phase === "implementation" && implementationExecutor !== "acp") {
+      await this.cachePendingStartInput(workflowKey, input, sessionAlias, taskId);
+      await this.audit(requestId, "task.execute.start.needs-implementation-executor", "codex", "OK", {
+        sessionAlias,
+        selectedModel
+      });
+      return makeResult(
+        requestId,
+        this.buildNeedsImplementationExecutorResponse(sessionAlias, taskId, "implementation_start")
+      );
     }
     const designPlanningExecutor = this.resolveDesignPlanningExecutor(input);
     if (
@@ -2083,6 +2253,46 @@ export class BridgeService {
     };
   }
 
+  private buildNeedsImplementationExecutorResponse(
+    sessionAlias: string,
+    taskId: string,
+    source: "implementation_start" | "planning_approve"
+  ): Record<string, unknown> {
+    const businessReason =
+      source === "planning_approve"
+        ? "当前方案和计划已经确认，下一步需要确定由谁进入实施阶段。"
+        : "当前方案和计划已经具备，已经满足进入实施入口的前置门禁。";
+    return {
+      task_id: taskId,
+      session_alias: sessionAlias,
+      workflow_status: "NEEDS_IMPLEMENTATION_EXECUTOR",
+      current_stage: "NEEDS_IMPLEMENTATION_EXECUTOR",
+      business_stage: "实施执行方选择",
+      business_reason: businessReason,
+      next_business_action: "选择由主会话继续实施，或交给 ACP 进入实施闭环",
+      user_message:
+        "当前方案和计划已经确认。下一步需要确定由谁进入实施阶段：你可以选择继续由主会话实施，或交给 ACP 进入委派实施闭环。",
+      next_action_required: ["implementation_executor_select"],
+      default_option: "1",
+      user_options: [
+        {
+          option: "1",
+          label: "主会话继续实施（默认）",
+          action: "implementation_executor_select",
+          implementation_executor: "main",
+          description: "后续编码、自动化测试、真实交付测试和失败修复全部由主会话负责"
+        },
+        {
+          option: "2",
+          label: "ACP 委派实施",
+          action: "implementation_executor_select",
+          implementation_executor: "acp",
+          description: "继续进入 ACP 模型确认与实施闭环"
+        }
+      ]
+    };
+  }
+
   private buildImplementationPlanGateNeedsInputResponse(
     sessionAlias: string,
     taskId: string,
@@ -2442,6 +2652,17 @@ export class BridgeService {
     );
   }
 
+  private async tryLoadWorkflowState(workspacePath: string, sessionAlias: string): Promise<TaskWorkflowState | undefined> {
+    try {
+      return await this.loadWorkflowState(workspacePath, sessionAlias);
+    } catch (error) {
+      if (error instanceof BridgeError && error.code === ErrorCodes.WORKFLOW_NOT_FOUND) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
   private async findPersistedWorkflow(workflowKey: string): Promise<DelegateWorkflowRecord | undefined> {
     try {
       return await this.store.findWorkflowByKey(workflowKey);
@@ -2591,6 +2812,8 @@ export class BridgeService {
       activeModel: workflow.activeModel,
       activeAgentMode: workflow.activeAgentMode,
       fallbackModels: workflow.fallbackModels,
+      implementationExecutor: workflow.implementationExecutor,
+      transferReason: workflow.transferReason,
       requirementText: workflow.requirementText,
       detectedStartPhase: workflow.detectedStartPhase,
       detectionEvidence: workflow.detectionEvidence,
@@ -2656,6 +2879,8 @@ export class BridgeService {
       activeModel: this.readString(snapshot.activeModel),
       activeAgentMode: this.readAgentMode(snapshot.activeAgentMode),
       fallbackModels: this.readStringArray(snapshot.fallbackModels),
+      implementationExecutor: this.readImplementationExecutor(snapshot.implementationExecutor),
+      transferReason: this.readTransferReason(snapshot.transferReason),
       requirementText: this.readString(snapshot.requirementText) ?? "",
       detectedStartPhase: this.readWorkflowEntryPhase(snapshot.detectedStartPhase) ?? "implementation",
       detectionEvidence: this.readStringArray(snapshot.detectionEvidence),
@@ -2746,6 +2971,7 @@ export class BridgeService {
       "WAITING_DESIGN_APPROVAL",
       "RUNNING_PLANNING",
       "WAITING_PLAN_APPROVAL",
+      "NEEDS_IMPLEMENTATION_EXECUTOR",
       "RUNNING_IMPLEMENTATION",
       "NEEDS_DELIVERY_TEST",
       "DELIVERY_TEST_FAILED",
@@ -2778,6 +3004,22 @@ export class BridgeService {
   private readWorkflowEntryPhase(value: unknown): WorkflowEntryPhase | undefined {
     const phase = this.readString(value);
     return phase === "design" || phase === "planning" || phase === "implementation" ? phase : undefined;
+  }
+
+  private readImplementationExecutor(value: unknown): ImplementationExecutor | undefined {
+    const executor = this.readString(value);
+    return executor === "main" || executor === "acp" ? executor : undefined;
+  }
+
+  private readTransferReason(
+    value: unknown
+  ): "implementation_executor_main" | "handoff_to_main" | "acp_session_unavailable" | undefined {
+    const reason = this.readString(value);
+    return reason === "implementation_executor_main" ||
+      reason === "handoff_to_main" ||
+      reason === "acp_session_unavailable"
+      ? reason
+      : undefined;
   }
 
   private readDevelopmentType(value: unknown): DevelopmentType | undefined {
@@ -3065,6 +3307,15 @@ export class BridgeService {
       stage === "TRANSFERRED_TO_MAIN" ||
       stage === "CANCELLED"
     );
+  }
+
+  private enterImplementationExecutorGate(workflow: TaskWorkflowState): void {
+    workflow.stage = "NEEDS_IMPLEMENTATION_EXECUTOR";
+    workflow.activePhase = undefined;
+    workflow.activePhaseStartedAt = undefined;
+    workflow.lastCompletedAt = now();
+    workflow.lastError = undefined;
+    workflow.implementationExecutor = undefined;
   }
 
   private assertWorkflowStage(
@@ -3838,6 +4089,7 @@ export class BridgeService {
       throw new BridgeError(error.code as ErrorCode, error.message, error.retryable);
       }
     }
+    const closed = closeResult.success;
 
     workflow.stage = "TRANSFERRED_TO_MAIN";
     workflow.lastCompletedAt = now();
@@ -3845,14 +4097,48 @@ export class BridgeService {
     workflow.activePhase = undefined;
     workflow.lastError = undefined;
 
+    return this.buildTransferredToMainResponse(
+      workflow.sessionAlias,
+      workflow.taskId,
+      workflow.bridgeSessionId,
+      workflow.transferReason,
+      closed
+    );
+  }
+
+  private buildTransferredToMainResponse(
+    sessionAlias: string,
+    taskId: string,
+    bridgeSessionId?: string,
+    transferReason?: "implementation_executor_main" | "handoff_to_main" | "acp_session_unavailable",
+    closed?: boolean
+  ): Record<string, unknown> {
+    if (transferReason === "implementation_executor_main") {
+      return {
+        task_id: taskId,
+        session_alias: sessionAlias,
+        bridge_session_id: bridgeSessionId,
+        workflow_status: "TRANSFERRED_TO_MAIN",
+        current_stage: "TRANSFERRED_TO_MAIN",
+        business_stage: "转主会话实施",
+        user_message:
+          "当前需求、方案、计划和实施前门禁已经完成。你已选择由主会话继续实施，后续编码、自动化测试、真实交付测试和失败修复将全部由主会话负责。",
+        next_business_action: null,
+        next_action_required: null,
+        closed: closed ?? false,
+        transfer_reason: "implementation_executor_main"
+      };
+    }
+
     return {
-      session_alias: workflow.sessionAlias,
-      bridge_session_id: workflow.bridgeSessionId,
+      task_id: taskId,
+      session_alias: sessionAlias,
+      bridge_session_id: bridgeSessionId,
       workflow_status: "TRANSFERRED_TO_MAIN",
       current_stage: "TRANSFERRED_TO_MAIN",
       next_action_required: null,
       cancelled: true,
-      closed: true
+      closed: closed ?? true
     };
   }
 
@@ -4156,6 +4442,7 @@ export class BridgeService {
       workspacePath: input.workspace_path,
       bridgeSessionId,
       fallbackModels: [],
+      implementationExecutor: this.resolveImplementationExecutor(input),
       requirementText: input.requirement_text,
       detectedStartPhase,
       detectionEvidence,
@@ -4410,6 +4697,8 @@ export class BridgeService {
       document_profile: this.toDocumentProfilePayload(workflow.developmentType),
       current_model: workflow.activeModel,
       current_agent_mode: workflow.activeAgentMode,
+      implementation_executor: workflow.implementationExecutor ?? null,
+      transfer_reason: workflow.transferReason ?? null,
       workflow_status: workflow.stage,
       active_phase: workflow.activePhase ?? null,
       active_phase_started_at: workflow.activePhaseStartedAt,
@@ -4592,6 +4881,34 @@ export class BridgeService {
         next_action_required: ["planning_feedback", "planning_approve"]
       };
     }
+    if (workflow.stage === "NEEDS_IMPLEMENTATION_EXECUTOR") {
+      return {
+        ...base,
+        current_stage: "IMPLEMENTATION_EXECUTOR_SELECTION",
+        business_stage: "实施执行方选择",
+        user_message:
+          "当前方案和计划已经确认。下一步需要确定由谁进入实施阶段：你可以选择继续由主会话实施，或交给 ACP 进入委派实施闭环。",
+        next_business_action: "选择实施执行方",
+        next_action_required: ["implementation_executor_select"],
+        default_option: "1",
+        user_options: [
+          {
+            option: "1",
+            action: "implementation_executor_select",
+            implementation_executor: "main",
+            label: "主会话继续实施（默认）",
+            description: "后续编码、自动化测试、真实交付测试和失败修复全部由主会话负责"
+          },
+          {
+            option: "2",
+            action: "implementation_executor_select",
+            implementation_executor: "acp",
+            label: "ACP 委派实施",
+            description: "继续进入 ACP 模型确认与实施闭环"
+          }
+        ]
+      };
+    }
     if (workflow.stage === "RUNNING_IMPLEMENTATION") {
       return {
         ...base,
@@ -4749,6 +5066,14 @@ export class BridgeService {
       };
     }
     if (workflow.stage === "TRANSFERRED_TO_MAIN") {
+      if (workflow.transferReason === "implementation_executor_main") {
+        return this.buildTransferredToMainResponse(
+          workflow.sessionAlias,
+          workflow.taskId,
+          workflow.bridgeSessionId,
+          workflow.transferReason
+        );
+      }
       return {
         ...base,
         current_stage: "TRANSFERRED_TO_MAIN",

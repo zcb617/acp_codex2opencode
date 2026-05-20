@@ -46,7 +46,7 @@ description: Use only when the user explicitly asks for delegation workflow/team
 1. 先说明当前业务阶段、判断依据和下一步业务动作。
 2. 禁止把 `workflow_status` / `current_stage` / `next_action_required` 作为用户首屏主提示。
 3. 内部状态字段只用于决定下一步工具调用；除非用户明确要求调试，否则不要主动展示。
-4. 用户看到的模型选择提示必须类似：“当前已经有了方案和计划，按约定可以直接进入计划实施阶段。请为本次计划实施选择执行模型。”
+4. 用户看到的实施入口提示必须先明确“当前方案和计划已经确认，下一步需要选择实施执行方”；只有在用户明确选择 ACP 实施后，才提示模型选择。
 5. 不要使用“委派实现模型”“MCP 工具”“内部参数”等开发者视角表达作为主提示。
 6. 实施阶段必须使用“持续跟进”“暂无新的可汇报进展”“超过约定时间仍无进展”等业务表达；禁止向用户使用开发导向的进度查看表达。
 </BUSINESS-FIRST-OUTPUT>
@@ -86,7 +86,7 @@ Design / Planning 阶段必须读取本 skill 自带 `docs/` 目录里的对应�
 3. **阶段和开发类型判定由主对话模型完成，插件只编排。** 插件不替代主对话做阶段决策，也不通过关键词穷举猜开发类型。
 4. **模棱两可即不满足。** 当主对话无法明确判定阶段或开发类型时，必须使用 `need_user_input`，禁止猜测。
 5. **开发类型决定文档规则。** `feature` 使用新增功能设计和计划指南；`bugfix` 使用 BUG 修改设计和计划指南。BUG 修改必须使用 BUG 修改设计和计划指南；四份指南都必须从本 skill 自带 `docs/` 目录读取。
-6. **只有计划实施阶段才需要选择 ACP 执行模型。** 方案制定、计划制定默认由主会话执行，不触发模型选择；只有用户明确选择 ACP 执行方案/计划时才需要模型。
+6. **计划确认后必须先选择实施执行方；只有用户明确选择 ACP 实施时才需要选择 ACP 执行模型。** 方案制定、计划制定默认由主会话执行，不触发模型选择；主会话实施路径在实施入口结束插件闭环。
 7. **一切推进看返回状态，但对用户表达必须看业务语义。** 下一步只允许执行 `next_action_required` 里的动作；对用户说明时优先使用 `business_stage` / `user_message` / `next_business_action`。
 8. **方案/计划必须落成文件。** Design / Planning 输出必须是 Markdown 文档文件，不能只在对话中给一段方案或计划文字；必须使用插件返回的 `required_output_document.relative_path`，或默认路径 `docs/superpowers/specs/<YYYY-MM-DD>-<session_alias>-design.md` / `docs/superpowers/plans/<YYYY-MM-DD>-<session_alias>-plan.md`。
 9. **计划必须对齐方案来源。** Planning 不能凭空写；如果 Design 是主会话刚生成的文件，重新 `start` 进入 Planning 时必须在 `requirement_text` 写明该方案文件路径，并在写计划前读取该文件；如果方案是用户直接提供的正文，计划必须以该正文为依据。
@@ -108,6 +108,7 @@ digraph team_delegate_flow {
   "Judge start phase in main dialog" [shape=box];
   "Call delegate.task.execute(start)" [shape=box];
   "Read workflow_status" [shape=diamond];
+  "NEEDS_IMPLEMENTATION_EXECUTOR" [shape=box];
   "NEEDS_MODEL_CONFIRM / NEEDS_MODEL_SELECTION" [shape=box];
   "NEEDS_USER_INPUT" [shape=box];
   "NEEDS_MAIN_DESIGN / NEEDS_MAIN_PLANNING" [shape=box];
@@ -120,6 +121,7 @@ digraph team_delegate_flow {
   "Skill Triggered" -> "Judge start phase in main dialog";
   "Judge start phase in main dialog" -> "Call delegate.task.execute(start)";
   "Call delegate.task.execute(start)" -> "Read workflow_status";
+  "Read workflow_status" -> "NEEDS_IMPLEMENTATION_EXECUTOR";
   "Read workflow_status" -> "NEEDS_MODEL_CONFIRM / NEEDS_MODEL_SELECTION";
   "Read workflow_status" -> "NEEDS_USER_INPUT";
   "Read workflow_status" -> "NEEDS_MAIN_DESIGN / NEEDS_MAIN_PLANNING";
@@ -135,12 +137,22 @@ digraph team_delegate_flow {
 
 ### 1) `NEEDS_MODEL_CONFIRM` / `NEEDS_MODEL_SELECTION`
 
-0. 只有计划实施阶段默认会进入模型选择；方案制定/计划制定默认主会话执行，不要要求用户选择模型。
+0. 只有用户明确选择 ACP 实施时才会进入模型选择；方案制定/计划制定默认主会话执行，主会话实施路径也不要要求用户选择模型。
 1. `NEEDS_MODEL_CONFIRM`：用业务语言说明为什么现在需要模型，再给用户二选一（默认 1）
    - `1` `model_confirm` + `model_confirm_choice=use_saved_model`
    - `2` `model_confirm` + `model_confirm_choice=select_new_model`
-2. `NEEDS_MODEL_SELECTION`：用 `user_message` 或同义业务表达提示用户选择本次计划实施模型，展示 `available_models`，由用户选一个后调用 `model_select` 并传 `selected_model`。
+2. `NEEDS_MODEL_SELECTION`：用 `user_message` 或同义业务表达提示用户选择本次 ACP 实施模型，展示 `available_models`，由用户选一个后调用 `model_select` 并传 `selected_model`。
 3. 完成模型确认/选择后才可进入下一阶段。
+
+### 1.5) `NEEDS_IMPLEMENTATION_EXECUTOR`
+
+1. 先用业务语言说明：当前方案和计划已经确认，下一步必须确定由谁进入实施阶段。
+2. 只给两个选择（默认 1）：
+   - `1` 主会话继续实施（默认）
+   - `2` ACP 委派实施
+3. 如果用户选择主会话继续实施，调用 `implementation_executor_select` 且传 `implementation_executor=main`；插件闭环在此结束，后续编码、自动化测试、真实交付测试和失败修复全部由主会话负责。
+4. 如果用户选择 ACP 委派实施，调用 `implementation_executor_select` 且传 `implementation_executor=acp`；之后才继续模型确认/选择与 ACP 实施闭环。
+5. 禁止在这个节点跳过用户选择直接进入 `model_confirm`、`model_select` 或 `RUNNING_IMPLEMENTATION`。
 
 ### 2) `NEEDS_USER_INPUT`
 
@@ -232,7 +244,7 @@ digraph team_delegate_flow {
 3. 对用户提示必须明确“需要确认才能进入下一阶段”，并给出确认词示例：`可以/同意/确认`。
 4. 若用户给出补充意见而非确认词，必须走 `planning_feedback` 修订后再次发起确认，直到用户确认。
 5. 修订 planning 文档时只能在原文件增量修改，禁止重写整篇、禁止改用新文件路径替代原文档。
-6. `planning_approve` 后只代表进入计划实施；实施完成后仍必须等待真实业务交付测试。
+6. `planning_approve` 后只代表进入实施执行方选择；只有选择 ACP 实施时才继续进入实施闭环。
 
 ### 7) `NEEDS_DELIVERY_TEST`
 
@@ -276,7 +288,7 @@ digraph team_delegate_flow {
 
 1. `COMPLETED`：汇报完成与产出。
 2. `FAILED`：报告错误并给出下一步可执行动作（通常 `status` 或重启流程）。
-3. `TRANSFERRED_TO_MAIN`：确认已取消并关闭 ACP 会话，回到主会话处理。
+3. `TRANSFERRED_TO_MAIN`：确认当前任务已经转由主会话处理。若是在实施入口主动选择主会话实施，必须明确说明插件闭环到此结束，后续编码、自动化测试、真实交付测试和失败修复全部由主会话负责。
 4. `CANCELLED`：确认用户取消后续工作，并明确本次任务未通过交付测试，不能声明交付完成。
 
 ## 必用调用模板

@@ -96,7 +96,10 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("BUG 修改");
     expect(skill).toContain("禁止在插件内部通过关键词穷举判断开发类型");
     expect(skill).toContain("业务导向");
-    expect(skill).toContain("只有计划实施阶段才需要选择 ACP 执行模型");
+    expect(skill).toContain("计划确认后必须先选择实施执行方");
+    expect(skill).toContain("只有用户明确选择 ACP 实施时才需要选择 ACP 执行模型");
+    expect(skill).toContain("主会话继续实施（默认）");
+    expect(skill).toContain("ACP 委派实施");
     expect(skill).toContain("禁止把 `workflow_status`");
     expect(skill).toContain("实施阶段必须满足 1-2 分钟持续跟进节奏");
     expect(skill).toContain("禁止提前向用户输出暂无进展");
