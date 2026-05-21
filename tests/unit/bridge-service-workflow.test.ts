@@ -434,9 +434,11 @@ describe("bridge workflow approvals", () => {
     expect(start.success).toBe(true);
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_IMPLEMENTATION_EXECUTOR");
     expect((start.data as { business_stage: string }).business_stage).toBe("实施执行方选择");
-    expect((start.data as { user_message: string }).user_message).toContain("当前方案和计划已经确认");
-    expect((start.data as { user_message: string }).user_message).toContain("主会话实施");
-    expect((start.data as { user_message: string }).user_message).toContain("ACP");
+    expect((start.data as { user_message: string }).user_message).toContain("当前阶段：实施执行方选择");
+    expect((start.data as { user_message: string }).user_message).toContain("进入原因：");
+    expect((start.data as { user_message: string }).user_message).toContain("你现在要做的选择：");
+    expect((start.data as { user_message: string }).user_message).toContain("选择影响：");
+    expect((start.data as { user_message: string }).user_message).not.toContain("workflow_status");
   });
 
   it("should block implementation start when referenced plan document fails strict gate", async () => {
@@ -1659,6 +1661,24 @@ describe("bridge workflow approvals", () => {
     expect(hacked.initSession).not.toHaveBeenCalled();
   });
 
+  it("should return business-readable workspace validation errors", async () => {
+    const service = mockBridgeService();
+
+    const missingWorkspace = await service.executeTask({
+      workspace_path: "",
+      requirement_text: "请开始任务",
+      session_alias: "task-workspace-empty",
+      action: "start",
+      start_phase: "design",
+      development_type: "feature"
+    });
+
+    expect(missingWorkspace.success).toBe(false);
+    expect((missingWorkspace.error as { code: string }).code).toBe(ErrorCodes.INVALID_REQUEST);
+    expect((missingWorkspace.error as { message: string }).message).toContain("缺少项目工作目录");
+    expect((missingWorkspace.error as { message: string }).message).not.toContain("workspace_path");
+  });
+
   it("should build feature design and planning prompts with development guides", () => {
     const service = mockBridgeService();
     const hacked = service as unknown as {
@@ -2398,6 +2418,8 @@ describe("bridge workflow approvals", () => {
     expect(start.success).toBe(true);
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_DESIGN");
     expect((start.data as { default_option: string }).default_option).toBe("1");
+    expect((start.data as { user_message: string }).user_message).toContain("当前阶段：方案制定");
+    expect((start.data as { user_message: string }).user_message).toContain("你现在要做的选择：");
     expect(hacked.initSession).not.toHaveBeenCalled();
   });
 
@@ -2417,6 +2439,8 @@ describe("bridge workflow approvals", () => {
     expect(start.success).toBe(true);
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_PLANNING");
     expect((start.data as { default_option: string }).default_option).toBe("1");
+    expect((start.data as { user_message: string }).user_message).toContain("当前阶段：计划制定");
+    expect((start.data as { user_message: string }).user_message).toContain("选择影响：");
     expect(hacked.initSession).not.toHaveBeenCalled();
   });
   it('UT-01: should return progress_update.summary when ACP has new output', async () => {

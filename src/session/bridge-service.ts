@@ -869,6 +869,7 @@ export class BridgeService {
     let sessionAlias = input.session_alias?.trim() ?? input.task_id?.trim() ?? "";
 
     try {
+      this.validateWorkspace(input.workspace_path);
       const identity = await this.resolveTaskIdentity(input, action);
       sessionAlias = identity.sessionAlias;
       const taskId = identity.taskId;
@@ -2140,11 +2141,11 @@ export class BridgeService {
         : "当前信息还不足以判断应进入哪个业务阶段，或无法判断这是新增功能还是 BUG 修改。",
       next_business_action:
         requirementMining?.required
-          ? "请先用 ian-think 做目标对齐，再进入 brainstorming 做深度需求挖掘；若 brainstorming 不可用，请按 requirements_package 模板补齐后再重试 start。"
-          : "请先选择是否进入 ian-think 需求挖掘；若不进入，请直接补充缺失上下文后重新判断业务阶段和开发类型",
+          ? "请先在 ian-think 完成目标对齐，再在 brainstorming（需求挖掘）补充目标、场景、范围、约束、验收和风险信息，补齐后重新开始。"
+          : "请先补充缺失上下文，或先进行需求深挖后再重新判断业务阶段和开发类型。",
       user_message: requirementMining?.required
-        ? "当前处于需求深挖阶段，暂不允许直接进入方案或计划。请提供 requirements_package（目标、用户想法、场景、范围、约束、验收、风险），补齐后再继续。"
-        : "当前信息还不足以进入下一步。你可以先进入 ian-think 做需求挖掘（适合一句话或模糊需求），也可以直接补充缺失的方案、计划、实施约定，或明确这是新增功能还是 BUG 修改。",
+        ? "当前阶段：需求补齐。进入原因：现有信息还不足以进入方案或计划。你现在要做的选择：先补充目标、用户想法、业务场景、范围、约束、验收和风险。选择影响：补齐后即可继续进入下一阶段。"
+        : "当前阶段：上下文补充。进入原因：现有信息不足以稳定判断流程阶段或开发类型。你现在要做的选择：补充方案/计划/实施约定，或明确这是新增功能还是 BUG 修复。选择影响：补充完成后即可重新判定并继续推进。",
       detected_start_phase: null,
       detection_evidence: startDecision.evidence,
       ...developmentTypePayload,
@@ -2190,7 +2191,7 @@ export class BridgeService {
         business_stage: "方案制定",
         business_reason: "当前还没有完整方案，需要先完成方案制定。",
         next_business_action: `由主会话先完成“写方案前前置梳理（清单+逐节点流程+异常控制点+用户确认循环）”，确认后再制定方案并写入 ${outputDocument.relativePath}`,
-        user_message: `当前还没有完整方案，需要先进入方案制定阶段。按约定方案制定由主会话执行，不需要选择 ACP 模型；但在写方案前，必须先基于代码完成前置梳理并让用户确认，确认后才能输出 Markdown 方案文件，路径为 ${outputDocument.relativePath}。`,
+        user_message: `当前阶段：方案制定。进入原因：还没有可评审的完整方案。你现在要做的选择：1）主会话先做前置梳理并输出方案文档；2）委派 ACP 执行方案制定。选择影响：选主会话会先把方案落盘到 ${outputDocument.relativePath} 再进入下一阶段；选 ACP 会直接切到委派方案流程。`,
         required_output_document: {
           phase: "design",
           relative_path: outputDocument.relativePath,
@@ -2225,7 +2226,7 @@ export class BridgeService {
       business_stage: "计划制定",
       business_reason: "当前已有方案，但还需要制定可执行计划。",
       next_business_action: `由主会话先读取或确认方案来源，再制定计划，并写入 ${outputDocument.relativePath}`,
-      user_message: `当前已有方案，需要进入计划制定阶段。按约定计划制定由主会话执行，不需要选择 ACP 模型；计划必须对齐方案来源，输出必须是 Markdown 文档，路径为 ${outputDocument.relativePath}。`,
+      user_message: `当前阶段：计划制定。进入原因：方案已经具备，但还没有可执行计划。你现在要做的选择：1）主会话制定计划；2）委派 ACP 制定计划。选择影响：选主会话会先把计划落盘到 ${outputDocument.relativePath} 后再进入实施入口；选 ACP 会切到委派计划流程。`,
       planning_source: planningSource,
       required_output_document: {
         phase: "planning",
@@ -2271,7 +2272,7 @@ export class BridgeService {
       business_reason: businessReason,
       next_business_action: "选择由主会话继续实施，或交给 ACP 进入实施闭环",
       user_message:
-        "当前方案和计划已经确认。下一步需要确定由谁进入实施阶段：你可以选择继续由主会话实施，或交给 ACP 进入委派实施闭环。",
+        "当前阶段：实施执行方选择。进入原因：方案和计划都已确认，可以进入实施。你现在要做的选择：1）主会话继续实施；2）交给 ACP 实施。选择影响：选主会话后，后续编码、自动化测试和交付测试都由主会话负责；选 ACP 后，进入 ACP 实施闭环。",
       next_action_required: ["implementation_executor_select"],
       default_option: "1",
       user_options: [
@@ -6313,7 +6314,11 @@ export class BridgeService {
 
   private validateWorkspace(workspacePath: string): void {
     if (!workspacePath) {
-      throw new BridgeError(ErrorCodes.INVALID_REQUEST, "workspace_path 不能为空", false);
+      throw new BridgeError(
+        ErrorCodes.INVALID_REQUEST,
+        "当前无法开始任务：缺少项目工作目录。请在包含项目代码的目录中重新发起。",
+        false
+      );
     }
     if (!this.runtime.allowedWorkspaces || this.runtime.allowedWorkspaces.length === 0) {
       return;
@@ -6323,7 +6328,11 @@ export class BridgeService {
       workspacePath.toLowerCase().startsWith(item.toLowerCase())
     );
     if (!allowed) {
-      throw new BridgeError(ErrorCodes.INVALID_REQUEST, "workspace_path 不在白名单", false);
+      throw new BridgeError(
+        ErrorCodes.INVALID_REQUEST,
+        "当前无法开始任务：该项目目录不在可用范围内。请切换到允许的目录后重试。",
+        false
+      );
     }
   }
 
