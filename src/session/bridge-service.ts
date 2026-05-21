@@ -2190,8 +2190,8 @@ export class BridgeService {
         current_stage: "NEEDS_MAIN_DESIGN",
         business_stage: "方案制定",
         business_reason: "当前还没有完整方案，需要先完成方案制定。",
-        next_business_action: `由主会话先完成“写方案前前置梳理（清单+逐节点流程+异常控制点+用户确认循环）”，确认后再制定方案并写入 ${outputDocument.relativePath}`,
-        user_message: `当前阶段：方案制定。进入原因：还没有可评审的完整方案。你现在要做的选择：1）主会话先做前置梳理并输出方案文档；2）委派 ACP 执行方案制定。选择影响：选主会话会先把方案落盘到 ${outputDocument.relativePath} 再进入下一阶段；选 ACP 会直接切到委派方案流程。`,
+        next_business_action: "先选择本次方案制定由主会话执行，还是交给 ACP 委派执行。",
+        user_message: `当前阶段：方案制定。进入原因：还没有可评审的完整方案。你现在要做的选择：1）主会话执行（默认）；2）ACP 委派执行。选择影响：选主会话会先做前置梳理，再把方案落盘到 ${outputDocument.relativePath} 后进入下一阶段；选 ACP 会直接切到委派方案流程。请直接回复 \`1\` 或 \`2\`。`,
         required_output_document: {
           phase: "design",
           relative_path: outputDocument.relativePath,
@@ -2225,8 +2225,8 @@ export class BridgeService {
       current_stage: "NEEDS_MAIN_PLANNING",
       business_stage: "计划制定",
       business_reason: "当前已有方案，但还需要制定可执行计划。",
-      next_business_action: `由主会话先读取或确认方案来源，再制定计划，并写入 ${outputDocument.relativePath}`,
-      user_message: `当前阶段：计划制定。进入原因：方案已经具备，但还没有可执行计划。你现在要做的选择：1）主会话制定计划；2）委派 ACP 制定计划。选择影响：选主会话会先把计划落盘到 ${outputDocument.relativePath} 后再进入实施入口；选 ACP 会切到委派计划流程。`,
+      next_business_action: "先选择本次计划制定由主会话执行，还是交给 ACP 委派执行。",
+      user_message: `当前阶段：计划制定。进入原因：方案已经具备，但还没有可执行计划。你现在要做的选择：1）主会话执行（默认）；2）ACP 委派执行。选择影响：选主会话会先读取或确认方案来源，再把计划落盘到 ${outputDocument.relativePath} 后进入实施入口；选 ACP 会切到委派计划流程。请直接回复 \`1\` 或 \`2\`。`,
       planning_source: planningSource,
       required_output_document: {
         phase: "planning",
@@ -4850,8 +4850,8 @@ export class BridgeService {
         ...base,
         current_stage: "DESIGN_REVIEW",
         business_stage: "方案确认",
-        user_message: `方案文档已生成并通过基础门禁。请审阅；如果需要退回修订，请先对照 ${revisionInstruction.guide_relative_path} 再提交反馈。`,
-        next_business_action: `审阅方案文档；如需修订，请先对照 ${revisionInstruction.guide_relative_path} 校对后，再通过 design_feedback 提交修改意见。`,
+        user_message: `方案文档已生成并通过基础门禁。请审阅；如无补充请回复“可以/同意/确认”进入下一阶段；如果需要退回修订，请先对照 ${revisionInstruction.guide_relative_path} 再提交反馈。`,
+        next_business_action: `审阅方案文档；确认通过则回复“可以/同意/确认”；如需修订，请先对照 ${revisionInstruction.guide_relative_path} 校对后，再通过 design_feedback 提交修改意见。`,
         document_revision_instruction: revisionInstruction,
         next_action_required: ["design_feedback", "design_approve"]
       };
@@ -4876,8 +4876,8 @@ export class BridgeService {
         ...base,
         current_stage: "PLANNING_REVIEW",
         business_stage: "计划确认",
-        user_message: `计划文档已生成并通过基础门禁。请审阅；如果需要退回修订，请先对照 ${revisionInstruction.guide_relative_path} 再提交反馈。`,
-        next_business_action: `审阅计划文档；如需修订，请先对照 ${revisionInstruction.guide_relative_path} 校对后，再通过 planning_feedback 提交修改意见。`,
+        user_message: `计划文档已生成并通过基础门禁。请审阅；如无补充请回复“可以/同意/确认”进入下一阶段；如果需要退回修订，请先对照 ${revisionInstruction.guide_relative_path} 再提交反馈。`,
+        next_business_action: `审阅计划文档；确认通过则回复“可以/同意/确认”；如需修订，请先对照 ${revisionInstruction.guide_relative_path} 校对后，再通过 planning_feedback 提交修改意见。`,
         document_revision_instruction: revisionInstruction,
         next_action_required: ["planning_feedback", "planning_approve"]
       };
@@ -4888,8 +4888,8 @@ export class BridgeService {
         current_stage: "IMPLEMENTATION_EXECUTOR_SELECTION",
         business_stage: "实施执行方选择",
         user_message:
-          "当前方案和计划已经确认。下一步需要确定由谁进入实施阶段：你可以选择继续由主会话实施，或交给 ACP 进入委派实施闭环。",
-        next_business_action: "选择实施执行方",
+          "当前方案和计划已经确认。下一步需要确定由谁进入实施阶段：你可以选择继续由主会话实施，或交给 ACP 进入委派实施闭环。请直接回复 `1` 或 `2`。",
+        next_business_action: "选择实施执行方，并直接回复 `1` 或 `2`",
         next_action_required: ["implementation_executor_select"],
         default_option: "1",
         user_options: [

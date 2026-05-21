@@ -1,6 +1,6 @@
 ---
 name: team-delegate
-description: Use only when the user explicitly asks for delegation workflow/team mode (team-delegate, 委派, delegation, Design->Planning->Implementation orchestration) and wants plugin orchestration instead of manual API filling.
+description: Use only when the user explicitly asks for delegation workflow/team mode (team-delegate, 委派, delegation, Design->Planning->Implementation orchestration), or when the current turn is continuing an existing delegated session through approval replies, 1/2 selector replies, or delegated rework follow-up.
 ---
 
 # Team Delegate
@@ -70,10 +70,12 @@ Design / Planning 阶段必须读取本 skill 自带 `docs/` 目录里的对应�
 2. 明确说“Design -> Planning -> Implementation”流程要走闭环并等待审批。
 3. 明确说“不想手填 API 参数，由插件自动编排”。
 4. 明确说“继续某个已委派会话并整改”。
-5. "delegate this task / use delegation workflow / team-delegate"
-6. "run design -> planning -> implementation with approval gates"
-7. "continue previous delegated session with rework"
-8. "do not make me fill API params manually; orchestrate by plugin"
+5. 明确说“继续已有委派会话”。
+6. 当前回合是在继续一个已经进入方案/计划执行方选择、方案确认、计划确认、实施执行方选择或整改确认的既有委派任务，用户只回复 `1/2`、`可以/同意/确认` 或等价确认语义。
+7. "delegate this task / use delegation workflow / team-delegate"
+8. "run design -> planning -> implementation with approval gates"
+9. "continue previous delegated session with rework"
+10. "do not make me fill API params manually; orchestrate by plugin"
 
 兼容别名：
 
@@ -173,13 +175,15 @@ digraph team_delegate_flow {
 
 ### 3) `NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING`
 
-1. 先明确说明当前处于方案制定或计划制定阶段，按约定由主会话执行，不需要选择 ACP 模型。
-2. 只给用户两项明确选择（默认 1）：
+1. 先明确说明当前处于方案制定或计划制定阶段，本轮必须先选择由谁执行，当前还不能直接开始方案或计划编制，也不需要选择 ACP 模型。
+2. 必须先停住等待用户选择执行方；禁止静默按默认 1 继续，禁止把默认值当成用户已经选择。
+3. 只给用户两项明确选择（默认 1）：
    - `1` 主会话执行（默认）
    - `2` ACP 委派执行（重新 `action=start` 且传 `design_planning_executor=acp`）
-3. 在用户选择前，不做任何本地实现动作。
-4. 若用户选择主会话执行 `design`，必须先完成“写方案前前置梳理节点流”，未完成且未获用户确认前，禁止创建或更新 `required_output_document.relative_path` 方案文件。
-5. `design` 前置梳理节点流（每个节点都必须逐个说明：当前节点在做什么、进入条件、节点产出、下一节点、异常分流与回流）：
+4. 必须要求用户直接回复 `1` 或 `2`；请直接回复 `1` 或 `2`。如果用户没有明确选择，就继续停在这个节点，不得自行代替用户决定。
+5. 在用户选择前，不做任何本地实现动作。
+6. 若用户选择主会话执行 `design`，必须先完成“写方案前前置梳理节点流”，未完成且未获用户确认前，禁止创建或更新 `required_output_document.relative_path` 方案文件。
+7. `design` 前置梳理节点流（每个节点都必须逐个说明：当前节点在做什么、进入条件、节点产出、下一节点、异常分流与回流）：
    - 节点 1：任务类型判定。判定“现有功能升级”或“新功能开发”；若信息不足，进入补充上下文分流并等待用户补充后回到节点 1。
    - 节点 2：代码证据收集（仅现有功能升级必走）。必须从本次任务涉及功能中去代码库查找现有代码，并标明文件路径、关键函数/模块和调用链证据；若查无有效代码证据，进入异常分流并要求用户确认是否转为新功能或补充范围。
    - 节点 3：业务流程梳理。现有功能升级必须罗列“所有当前代码中的业务流程”，并在本次涉及流程中逐条标注“修改后流程如何变化”；新功能开发必须按功能点分类（如增/删/改/查或业务模块）逐条描述流程。
@@ -187,17 +191,17 @@ digraph team_delegate_flow {
    - 节点 5：用户确认/补充。主会话展示节点 1-4 的梳理结果，请用户确认或补充。
    - 节点 6：修订回环。只要用户给出补充、修订意见或新增约束，必须回到受影响节点（2/3/4）增量修订，再回到节点 5 重新确认；这个循环持续到用户明确确认为止。
    - 节点 7：方案编制与落盘。仅当节点 5 得到确认类回复后，才允许编制方案并写入 `required_output_document.relative_path`。
-6. 若用户选择主会话执行 `planning`，必须创建或更新插件返回的 `required_output_document.relative_path` 指定的 Markdown 文件；不得只在聊天回复中输出计划正文。总规则：不得只在聊天回复中输出方案/计划正文。
-7. 主会话完成方案文档后，必须先进入“方案确认”环节：向用户发送确认提示（例如：`方案已生成，请审核；如无补充请回复“可以/同意/确认”，如需补充请直接反馈。`），未确认前不得进入计划阶段。
-8. 主会话完成计划文档后，必须先进入“计划确认”环节：向用户发送确认提示（例如：`计划已生成，请审核；如无补充请回复“可以/同意/确认”，如需补充请直接反馈。`），未确认前不得进入计划实施阶段。
-9. 确认类判定：用户明确回复“可以 / 同意 / 确认 / 通过 / OK（含语义等价表达）”时，才允许进入下一阶段。
-10. 补充类判定：只要用户提供补充信息、修订意见或新增约束，就视为“反馈”；主会话必须修订同一份文档并再次发起确认，直到用户给出确认类回复。
-11. 用户补充后，必须在原文档上增量修订，绝对禁止重写整篇文档；必须保留已确认内容与章节结构，避免前后版本语义断裂或不一致。
-12. 禁止通过新建“v2/新版”文档替代原文档；修订必须保持同一路径文件不变，并在原文档内更新受影响段落。
-13. 主会话完成方案并获得确认后，必须向用户说明方案文档路径；重新 `action=start` 进入计划阶段时，必须把该方案文件路径写入 `requirement_text`，让计划能读取文件并对齐方案。
-14. 若用户一开始直接提供了方案内容，插件判断进入计划阶段时，计划必须以用户提供的方案正文为输入；不得另造方案。
-15. 若既没有可读取的方案文件路径，也没有用户提供的方案正文，不得写计划，必须回到 `need_user_input` 要求补充方案来源。
-16. 写计划前先看插件返回的 `planning_source`：
+8. 若用户选择主会话执行 `planning`，必须创建或更新插件返回的 `required_output_document.relative_path` 指定的 Markdown 文件；不得只在聊天回复中输出计划正文。总规则：不得只在聊天回复中输出方案/计划正文。
+9. 主会话完成方案文档后，必须先进入“方案确认”环节：向用户发送确认提示（例如：`方案已生成，请审核；如无补充请回复“可以/同意/确认”，如需补充请直接反馈。`），未确认前不得进入计划阶段。
+10. 主会话完成计划文档后，必须先进入“计划确认”环节：向用户发送确认提示（例如：`计划已生成，请审核；如无补充请回复“可以/同意/确认”，如需补充请直接反馈。`），未确认前不得进入计划实施阶段。
+11. 确认类判定：用户明确回复“可以 / 同意 / 确认 / 通过 / OK（含语义等价表达）”时，才允许进入下一阶段。
+12. 补充类判定：只要用户提供补充信息、修订意见或新增约束，就视为“反馈”；主会话必须修订同一份文档并再次发起确认，直到用户给出确认类回复。
+13. 用户补充后，必须在原文档上增量修订，绝对禁止重写整篇文档；必须保留已确认内容与章节结构，避免前后版本语义断裂或不一致。
+14. 禁止通过新建“v2/新版”文档替代原文档；修订必须保持同一路径文件不变，并在原文档内更新受影响段落。
+15. 主会话完成方案并获得确认后，必须向用户说明方案文档路径；重新 `action=start` 进入计划阶段时，必须把该方案文件路径写入 `requirement_text`，让计划能读取文件并对齐方案。
+16. 若用户一开始直接提供了方案内容，插件判断进入计划阶段时，计划必须以用户提供的方案正文为输入；不得另造方案。
+17. 若既没有可读取的方案文件路径，也没有用户提供的方案正文，不得写计划，必须回到 `need_user_input` 要求补充方案来源。
+18. 写计划前先看插件返回的 `planning_source`：
    - `source_type=design_document_path`：先读取 `design_document_paths` 中的方案文件，再写计划。
    - `source_type=inline_design_from_requirement`：以 `requirement_text` 中用户提供的方案正文为依据；如果这其实是主会话刚生成的方案，必须要求补充方案文件路径。
 
@@ -356,6 +360,31 @@ digraph team_delegate_flow {
 }
 ```
 
+用户在方案/计划确认节点回复确认词时：
+
+```json
+{
+  "workspace_path": "<当前工作目录>",
+  "requirement_text": "<当前任务需求原文>",
+  "task_id": "<插件返回的同一任务ID>",
+  "session_alias": "<同一任务别名>",
+  "action": "planning_approve"
+}
+```
+
+用户在实施执行方选择节点回复 `1/2` 时：
+
+```json
+{
+  "workspace_path": "<当前工作目录>",
+  "requirement_text": "<当前任务需求原文>",
+  "task_id": "<插件返回的同一任务ID>",
+  "session_alias": "<同一任务别名>",
+  "action": "implementation_executor_select",
+  "implementation_executor": "<main|acp>"
+}
+```
+
 ## 红旗（出现即停止并回到流程）
 
 若模型产生以下想法，立即停止并回到“调用 `delegate.task.execute` -> 看状态”：
@@ -399,7 +428,13 @@ digraph team_delegate_flow {
 
 1. 必须复用用户给出的任务名作为 `session_alias`。
 2. 如果插件之前返回过 `task_id`，后续调用必须携带同一个 `task_id`。
-3. 如果用户明确选择继续等待，优先调用 `action=continue_wait`。
-4. 如果用户只是询问当前进展，调用 `action=status`。
-5. 禁止把继续任务当成新任务重新 `start`，除非插件明确返回找不到流程，且用户确认要重新开始。
-6. 如果误调用 `start` 后插件返回已有流程状态，必须按该状态继续，不得再次要求选择模型。
+3. 后续调用必须继续携带同一个 `workspace_path`，禁止在确认回合或 `1/2` 选择回合省略工作目录。
+4. 如果用户明确选择继续等待，优先调用 `action=continue_wait`。
+5. 如果用户只是询问当前进展，调用 `action=status`。
+6. 禁止把继续任务当成新任务重新 `start`，除非插件明确返回找不到流程，且用户确认要重新开始。
+7. 如果误调用 `start` 后插件返回已有流程状态，必须按该状态继续，不得再次要求选择模型。
+8. 如果当前任务正停在方案/计划执行方选择节点，用户只回复 `1` 或 `2` 时，必须视为继续当前委派任务，而不是重新判定新任务。
+9. 如果当前任务正停在方案确认或计划确认节点，用户只回复 `可以/同意/确认` 时，必须优先继续当前委派任务，禁止回到普通主会话开发流程。
+10. 这些都必须视为“继续当前委派任务”，不能脱离插件闭环。
+11. 用户在方案/计划执行方选择节点只回复 `1/2`，也必须视为继续已有委派会话。
+12. 用户在确认节点只回复 `可以/同意/确认`，也必须视为继续已有委派会话。

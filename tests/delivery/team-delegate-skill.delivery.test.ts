@@ -2,6 +2,21 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("team-delegate skill delivery wording", () => {
+  it("must describe continuing an existing delegated session on approval-only replies", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("continue previous delegated session with rework");
+    expect(skill).toContain("继续已有委派会话");
+    expect(skill).toContain("用户在方案/计划执行方选择节点只回复 `1/2`");
+    expect(skill).toContain("用户在确认节点只回复 `可以/同意/确认`");
+    expect(skill).toContain("这些都必须视为“继续当前委派任务”");
+    expect(skill).toContain("后续调用必须继续携带同一个 `workspace_path`");
+    expect(skill).toContain("action\": \"planning_approve\"");
+    expect(skill).toContain("action\": \"implementation_executor_select\"");
+    expect(skill).toContain("\"workspace_path\": \"<当前工作目录>\"");
+    expect(skill).toContain("\"session_alias\": \"<同一任务别名>\"");
+  });
+
   it("must stop following up when the restored workflow no longer offers continue_wait", async () => {
     const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
 
@@ -67,6 +82,9 @@ describe("team-delegate skill delivery wording", () => {
   it("must enforce confirmation loops for main-session design and planning docs", async () => {
     const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
 
+    expect(skill).toContain("必须先停住等待用户选择执行方");
+    expect(skill).toContain("禁止静默按默认 1 继续");
+    expect(skill).toContain("请直接回复 `1` 或 `2`");
     expect(skill).toContain("方案确认");
     expect(skill).toContain("计划确认");
     expect(skill).toContain("如无补充请回复“可以/同意/确认”");

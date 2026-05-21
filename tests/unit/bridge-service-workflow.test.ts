@@ -656,6 +656,8 @@ describe("bridge workflow approvals", () => {
     });
     expect(planning.success).toBe(true);
     expect((planning.data as { workflow_status: string }).workflow_status).toBe("WAITING_PLAN_APPROVAL");
+    expect((planning.data as { user_message: string }).user_message).toContain("请审阅");
+    expect((planning.data as { user_message: string }).user_message).toContain("如无补充请回复“可以/同意/确认”");
 
     const implementationDone = await service.executeTask({
       workspace_path: "D:/repo",
@@ -668,6 +670,7 @@ describe("bridge workflow approvals", () => {
       "NEEDS_IMPLEMENTATION_EXECUTOR"
     );
     expect((implementationDone.data as { business_stage: string }).business_stage).toBe("实施执行方选择");
+    expect((implementationDone.data as { user_message: string }).user_message).toContain("请直接回复 `1` 或 `2`");
     expect((implementationDone.data as { next_action_required: string[] }).next_action_required).toEqual([
       "implementation_executor_select"
     ]);
@@ -2418,8 +2421,12 @@ describe("bridge workflow approvals", () => {
     expect(start.success).toBe(true);
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_DESIGN");
     expect((start.data as { default_option: string }).default_option).toBe("1");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("选择");
     expect((start.data as { user_message: string }).user_message).toContain("当前阶段：方案制定");
     expect((start.data as { user_message: string }).user_message).toContain("你现在要做的选择：");
+    expect((start.data as { user_message: string }).user_message).toContain("请直接回复 `1` 或 `2`");
+    expect((start.data as { user_message: string }).user_message).toContain("1）主会话执行（默认）");
+    expect((start.data as { user_message: string }).user_message).toContain("2）ACP 委派执行");
     expect(hacked.initSession).not.toHaveBeenCalled();
   });
 
@@ -2439,7 +2446,11 @@ describe("bridge workflow approvals", () => {
     expect(start.success).toBe(true);
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_PLANNING");
     expect((start.data as { default_option: string }).default_option).toBe("1");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("选择");
     expect((start.data as { user_message: string }).user_message).toContain("当前阶段：计划制定");
+    expect((start.data as { user_message: string }).user_message).toContain("请直接回复 `1` 或 `2`");
+    expect((start.data as { user_message: string }).user_message).toContain("1）主会话执行（默认）");
+    expect((start.data as { user_message: string }).user_message).toContain("2）ACP 委派执行");
     expect((start.data as { user_message: string }).user_message).toContain("选择影响：");
     expect(hacked.initSession).not.toHaveBeenCalled();
   });
