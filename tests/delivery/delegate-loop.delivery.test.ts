@@ -90,6 +90,20 @@ describe("DS-01~DS-03 delivery contracts", () => {
     expect(implementationExecutor.action).toBe("implementation_executor_select");
     expect(implementationExecutor.implementation_executor).toBe("main");
 
+    const designComplete = ExecuteTaskSchema.parse({
+      workspace_path: "D:/repo/demo",
+      session_alias: "delegate-task-001",
+      action: "design_complete"
+    });
+    expect(designComplete.action).toBe("design_complete");
+
+    const planningComplete = ExecuteTaskSchema.parse({
+      workspace_path: "D:/repo/demo",
+      session_alias: "delegate-task-001",
+      action: "planning_complete"
+    });
+    expect(planningComplete.action).toBe("planning_complete");
+
     const deliveryPass = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
       session_alias: "delegate-task-001",

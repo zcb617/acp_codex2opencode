@@ -95,6 +95,8 @@ export interface ExecuteTaskInput {
 
 export type ExecuteTaskAction =
   | "start"
+  | "design_complete"
+  | "planning_complete"
   | "implementation_executor_select"
   | "model_confirm"
   | "model_select"
@@ -250,6 +252,8 @@ interface TaskWorkflowState {
   activeModel?: string;
   activeAgentMode?: "plan" | "build";
   fallbackModels: string[];
+  designExecutor?: DesignPlanningExecutor;
+  planningExecutor?: DesignPlanningExecutor;
   implementationExecutor?: ImplementationExecutor;
   transferReason?: "implementation_executor_main" | "handoff_to_main" | "acp_session_unavailable";
   requirementText: string;
@@ -879,6 +883,17 @@ export class BridgeService {
         return await this.handleStartWithModelGate(requestId, input, sessionAlias, taskId, workflowKey);
       }
 
+      if (action === "design_complete" || action === "planning_complete") {
+        return await this.handleMainPhaseCompleteAction(
+          requestId,
+          input,
+          sessionAlias,
+          taskId,
+          workflowKey,
+          action
+        );
+      }
+
       if (action === "model_confirm") {
         return await this.handleModelConfirmAction(requestId, input, sessionAlias, taskId, workflowKey, timeoutMs);
       }
@@ -1018,6 +1033,15 @@ export class BridgeService {
       if (action === "design_feedback") {
         this.assertWorkflowStage(workflow, ["WAITING_DESIGN_APPROVAL"], action);
         const feedback = this.requireFeedback(input.feedback_text, action);
+        if (workflow.designExecutor === "main") {
+          const response = await this.returnMainPhaseForRevision(workflow, "design", feedback);
+          await this.audit(requestId, "task.execute.design-feedback", "codex", "OK", {
+            sessionAlias,
+            taskId,
+            source: "main"
+          });
+          return makeResult(requestId, response);
+        }
         if (!(await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, false))) {
           await this.persistWorkflowState(workflow);
           return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
@@ -1036,6 +1060,15 @@ export class BridgeService {
 
       if (action === "design_approve") {
         this.assertWorkflowStage(workflow, ["WAITING_DESIGN_APPROVAL"], action);
+        if (workflow.designExecutor === "main") {
+          const response = await this.advanceMainDesignApprovalToPlanning(workflow);
+          await this.audit(requestId, "task.execute.design-approve", "codex", "OK", {
+            sessionAlias,
+            taskId,
+            source: "main"
+          });
+          return makeResult(requestId, response);
+        }
         if (!(await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, false))) {
           await this.persistWorkflowState(workflow);
           return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
@@ -1055,6 +1088,15 @@ export class BridgeService {
       if (action === "planning_feedback") {
         this.assertWorkflowStage(workflow, ["WAITING_PLAN_APPROVAL"], action);
         const feedback = this.requireFeedback(input.feedback_text, action);
+        if (workflow.planningExecutor === "main") {
+          const response = await this.returnMainPhaseForRevision(workflow, "planning", feedback);
+          await this.audit(requestId, "task.execute.planning-feedback", "codex", "OK", {
+            sessionAlias,
+            taskId,
+            source: "main"
+          });
+          return makeResult(requestId, response);
+        }
         if (!(await this.ensureWorkflowAcpSessionReadyOrDecision(workflow, false))) {
           await this.persistWorkflowState(workflow);
           return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
@@ -1072,6 +1114,15 @@ export class BridgeService {
       }
 
       this.assertWorkflowStage(workflow, ["WAITING_PLAN_APPROVAL"], action);
+      if (workflow.planningExecutor === "main") {
+        const response = await this.advanceMainPlanningApprovalToImplementation(workflow);
+        await this.audit(requestId, "task.execute.planning-approve", "codex", "OK", {
+          sessionAlias,
+          taskId,
+          source: "main"
+        });
+        return makeResult(requestId, response);
+      }
       this.enterImplementationExecutorGate(workflow);
       await this.persistWorkflowState(workflow);
       await this.audit(requestId, "task.execute.planning-approve", "codex", "OK", {
@@ -1267,6 +1318,7 @@ export class BridgeService {
       designPlanningExecutor === "main" &&
       (startDecision.phase === "design" || startDecision.phase === "planning")
     ) {
+      await this.cachePendingStartInput(workflowKey, startInput, sessionAlias, taskId);
       await this.audit(requestId, "task.execute.start.needs-main-executor", "codex", "OK", {
         sessionAlias,
         detectedStartPhase: startDecision.phase
@@ -1558,6 +1610,93 @@ export class BridgeService {
     );
   }
 
+  private async handleMainPhaseCompleteAction(
+    requestId: string,
+    input: ExecuteTaskInput,
+    sessionAlias: string,
+    taskId: string,
+    workflowKey: string,
+    action: "design_complete" | "planning_complete"
+  ): Promise<BridgeResult<unknown>> {
+    const expectedPhase = action === "design_complete" ? "design" : "planning";
+    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input, action);
+    const startDecision = this.resolveStartPhaseDecision(effectiveInput);
+    if (startDecision.phase !== expectedPhase) {
+      throw new BridgeError(
+        ErrorCodes.WORKFLOW_INVALID_TRANSITION,
+        `${action} 只能用于主会话 ${expectedPhase === "design" ? "方案" : "计划"} 文档完成后的回填`,
+        false
+      );
+    }
+
+    const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
+    if (developmentDecision.type === "need_user_input") {
+      throw new BridgeError(
+        ErrorCodes.WORKFLOW_INVALID_TRANSITION,
+        `${action} 需要明确的 development_type，当前不能继续`,
+        false
+      );
+    }
+
+    const gate = await this.evaluateMainPhaseDocumentGate(
+      effectiveInput.workspace_path,
+      sessionAlias,
+      expectedPhase,
+      developmentDecision.type
+    );
+    if (!gate.passed) {
+      await this.audit(requestId, `task.execute.${action}.gate-failed`, "codex", "OK", {
+        sessionAlias,
+        taskId,
+        missingSections: gate.missingSections
+      });
+      return makeResult(
+        requestId,
+        this.buildMainPhaseRevisionResponse(
+          effectiveInput.workspace_path,
+          sessionAlias,
+          taskId,
+          expectedPhase,
+          effectiveInput.requirement_text,
+          startDecision.evidence,
+          developmentDecision,
+          gate.missingSections,
+          `${expectedPhase === "design" ? "方案" : "计划"}文档还没有满足基础门禁，请先补齐缺项后再重新提交。`
+        )
+      );
+    }
+
+    const existingWorkflow = await this.tryLoadWorkflowState(effectiveInput.workspace_path, sessionAlias);
+    if (existingWorkflow && !this.canReplaceMainApprovalWorkflow(existingWorkflow, expectedPhase)) {
+      throw new BridgeError(
+        ErrorCodes.WORKFLOW_INVALID_TRANSITION,
+        `当前 session_alias 已存在进行中的 ${existingWorkflow.stage}，不能执行 ${action}`,
+        false
+      );
+    }
+    if (existingWorkflow) {
+      await this.deleteWorkflowState(existingWorkflow);
+    }
+
+    const workflow = this.createMainApprovalWorkflow(
+      effectiveInput,
+      sessionAlias,
+      taskId,
+      expectedPhase,
+      startDecision.evidence,
+      developmentDecision,
+      gate.missingSections
+    );
+    this.workflowByKey.set(workflowKey, workflow);
+    await this.persistWorkflowState(workflow);
+    await this.audit(requestId, `task.execute.${action}`, "codex", "OK", {
+      sessionAlias,
+      taskId,
+      workflowStage: workflow.stage
+    });
+    return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
+  }
+
   private async startWorkflowAfterModelResolved(
     requestId: string,
     input: ExecuteTaskInputWithRequirement,
@@ -1598,7 +1737,7 @@ export class BridgeService {
       designPlanningExecutor === "main" &&
       (startDecision.phase === "design" || startDecision.phase === "planning")
     ) {
-      await this.clearPendingStartInput(workflowKey);
+      await this.cachePendingStartInput(workflowKey, input, sessionAlias, taskId);
       await this.audit(requestId, "task.execute.start.needs-main-executor", "codex", "OK", {
         sessionAlias,
         detectedStartPhase: startDecision.phase,
@@ -2202,6 +2341,12 @@ export class BridgeService {
         detection_evidence: detectionEvidence,
         ...developmentPayload,
         next_action_required: ["main_or_acp_selection"],
+        required_main_action: {
+          action: "design_complete",
+          source: "main_session",
+          output_document: outputDocument.relativePath,
+          rule: "主会话完成并落盘方案文档后，必须调用 design_complete 进入方案确认。"
+        },
         default_option: "1",
         user_options: [
           {
@@ -2238,6 +2383,12 @@ export class BridgeService {
       detection_evidence: detectionEvidence,
       ...developmentPayload,
       next_action_required: ["main_or_acp_selection"],
+      required_main_action: {
+        action: "planning_complete",
+        source: "main_session",
+        output_document: outputDocument.relativePath,
+        rule: "主会话完成并落盘计划文档后，必须调用 planning_complete 进入计划确认。"
+      },
       default_option: "1",
       user_options: [
         {
@@ -2251,6 +2402,69 @@ export class BridgeService {
           description: "重新调用 start，并传 design_planning_executor=acp"
         }
       ]
+    };
+  }
+
+  private buildMainPhaseRevisionResponse(
+    workspacePath: string,
+    sessionAlias: string,
+    taskId: string,
+    phase: "design" | "planning",
+    requirementText: string,
+    detectionEvidence: string[],
+    developmentDecision: DevelopmentTypeDecision,
+    missingSections: string[],
+    reason: string,
+    feedbackText?: string
+  ): Record<string, unknown> {
+    if (developmentDecision.type === "need_user_input") {
+      throw new BridgeError(ErrorCodes.WORKFLOW_INVALID_TRANSITION, "修订阶段缺少明确的 development_type", false);
+    }
+    const outputDocument = buildPhaseDocumentOutput(phase, sessionAlias, workspacePath);
+    const revisionInstruction = this.buildDocumentRevisionInstruction(
+      developmentDecision.type,
+      phase,
+      missingSections,
+      `请先在 ${outputDocument.relativePath} 原文档中补齐缺项并完成修订，再调用 ${
+        phase === "design" ? "design_complete" : "planning_complete"
+      } 回填确认。`
+    );
+    return {
+      task_id: taskId,
+      session_alias: sessionAlias,
+      workflow_status: phase === "design" ? "NEEDS_MAIN_DESIGN" : "NEEDS_MAIN_PLANNING",
+      current_stage: phase === "design" ? "NEEDS_MAIN_DESIGN" : "NEEDS_MAIN_PLANNING",
+      business_stage: phase === "design" ? "方案修订" : "计划修订",
+      business_reason: reason,
+      next_business_action:
+        phase === "design"
+          ? `请在 ${outputDocument.relativePath} 原方案文档中增量修订，补齐缺项后再次提交确认。`
+          : `请在 ${outputDocument.relativePath} 原计划文档中增量修订，补齐缺项后再次提交确认。`,
+      user_message: feedbackText
+        ? `${phase === "design" ? "方案" : "计划"}需要按反馈继续修订：${feedbackText}。请在原文档中增量修改，补齐缺项后再次提交确认。`
+        : `${phase === "design" ? "方案" : "计划"}文档还没有满足基础门禁。请先在原文档中补齐缺项，再重新提交确认。`,
+      ...(phase === "planning" ? { planning_source: this.buildPlanningSourcePayload(workspacePath, sessionAlias, requirementText) } : {}),
+      required_output_document: {
+        phase,
+        relative_path: outputDocument.relativePath,
+        absolute_path: outputDocument.absolutePath,
+        rule: "必须继续在同一路径 Markdown 文档上增量修订，不允许只在对话中输出正文，也不允许新建 v2 文档替代原文档"
+      },
+      detected_start_phase: phase,
+      detection_evidence: detectionEvidence,
+      ...this.toDevelopmentDecisionPayload(developmentDecision),
+      next_action_required: [phase === "design" ? "design_complete" : "planning_complete"],
+      missing_sections: missingSections,
+      feedback_text: feedbackText,
+      document_revision_instruction: revisionInstruction,
+      required_main_action: {
+        action: phase === "design" ? "design_complete" : "planning_complete",
+        source: "main_session",
+        output_document: outputDocument.relativePath,
+        rule: `主会话完成${phase === "design" ? "方案" : "计划"}修订并保存后，必须调用 ${
+          phase === "design" ? "design_complete" : "planning_complete"
+        } 重新进入确认。`
+      }
     };
   }
 
@@ -2813,6 +3027,8 @@ export class BridgeService {
       activeModel: workflow.activeModel,
       activeAgentMode: workflow.activeAgentMode,
       fallbackModels: workflow.fallbackModels,
+      designExecutor: workflow.designExecutor,
+      planningExecutor: workflow.planningExecutor,
       implementationExecutor: workflow.implementationExecutor,
       transferReason: workflow.transferReason,
       requirementText: workflow.requirementText,
@@ -2880,6 +3096,8 @@ export class BridgeService {
       activeModel: this.readString(snapshot.activeModel),
       activeAgentMode: this.readAgentMode(snapshot.activeAgentMode),
       fallbackModels: this.readStringArray(snapshot.fallbackModels),
+      designExecutor: this.readDesignPlanningExecutor(snapshot.designExecutor),
+      planningExecutor: this.readDesignPlanningExecutor(snapshot.planningExecutor),
       implementationExecutor: this.readImplementationExecutor(snapshot.implementationExecutor),
       transferReason: this.readTransferReason(snapshot.transferReason),
       requirementText: this.readString(snapshot.requirementText) ?? "",
@@ -3005,6 +3223,11 @@ export class BridgeService {
   private readWorkflowEntryPhase(value: unknown): WorkflowEntryPhase | undefined {
     const phase = this.readString(value);
     return phase === "design" || phase === "planning" || phase === "implementation" ? phase : undefined;
+  }
+
+  private readDesignPlanningExecutor(value: unknown): DesignPlanningExecutor | undefined {
+    const executor = this.readString(value);
+    return executor === "main" || executor === "acp" ? executor : undefined;
   }
 
   private readImplementationExecutor(value: unknown): ImplementationExecutor | undefined {
@@ -3217,6 +3440,237 @@ export class BridgeService {
           }
         };
       }
+    }
+  }
+
+  private async evaluateMainPhaseDocumentGate(
+    workspacePath: string,
+    sessionAlias: string,
+    phase: "design" | "planning",
+    developmentType: DevelopmentType
+  ): Promise<{ passed: boolean; missingSections: string[] }> {
+    const outputDocument = buildPhaseDocumentOutput(phase, sessionAlias, workspacePath);
+    const requiredSections =
+      phase === "design"
+        ? DOCUMENT_PROFILES[developmentType].designRequiredSections
+        : DOCUMENT_PROFILES[developmentType].planningRequiredSections;
+    return this.evaluateRequiredSections(
+      {
+        request_id: `main-${phase}-complete`,
+        success: true,
+        data: {
+          summary: ""
+        }
+      },
+      requiredSections,
+      outputDocument.absolutePath
+    );
+  }
+
+  private createMainApprovalWorkflow(
+    input: ExecuteTaskInputWithRequirement,
+    sessionAlias: string,
+    taskId: string,
+    phase: "design" | "planning",
+    detectionEvidence: string[],
+    developmentDecision: DevelopmentTypeDecision,
+    missingSections: string[]
+  ): TaskWorkflowState {
+    if (developmentDecision.type === "need_user_input") {
+      throw new BridgeError(ErrorCodes.WORKFLOW_INVALID_TRANSITION, "主会话确认闭环缺少 development_type", false);
+    }
+    const workflow: TaskWorkflowState = {
+      workflowId: `${Date.now()}`,
+      taskId,
+      sessionAlias,
+      workspacePath: input.workspace_path,
+      bridgeSessionId: newBridgeSessionId(),
+      fallbackModels: [],
+      designExecutor: phase === "design" ? "main" : undefined,
+      planningExecutor: phase === "planning" ? "main" : undefined,
+      requirementText: input.requirement_text,
+      detectedStartPhase: phase,
+      detectionEvidence,
+      developmentType: developmentDecision.type,
+      developmentTypeEvidence: developmentDecision.evidence,
+      acceptanceCriteria: input.acceptance_criteria,
+      maxReworkRounds: input.max_rework_rounds ?? 2,
+      autoClose: input.auto_close ?? true,
+      timeoutMs: this.resolveWorkflowTurnTimeoutMs(input.timeout_ms),
+      syncWaitMs: this.runtime.workflowSyncWaitMs ?? DEFAULT_WORKFLOW_SYNC_WAIT_MS,
+      stage: phase === "design" ? "WAITING_DESIGN_APPROVAL" : "WAITING_PLAN_APPROVAL",
+      deliveryTestFailures: [],
+      remediationRound: 0,
+      phaseGates: {
+        ...(phase === "design"
+          ? {
+              design: {
+                passed: true,
+                attempts: 1,
+                missingSections
+              }
+            }
+          : {}),
+        ...(phase === "planning"
+          ? {
+              planning: {
+                passed: true,
+                attempts: 1,
+                missingSections
+              }
+            }
+          : {})
+      },
+      steps: [],
+      idempotencySeq: 0,
+      pollIntervalMs: DEFAULT_WORKFLOW_POLL_INTERVAL_MS,
+      pollIntervalMinMs: DEFAULT_WORKFLOW_POLL_INTERVAL_MIN_MS,
+      pollIntervalMaxMs: DEFAULT_WORKFLOW_POLL_INTERVAL_MAX_MS,
+      silenceDecisionMs: DEFAULT_WORKFLOW_SILENCE_DECISION_MS,
+      currentPollCount: 0,
+      currentPollCycle: 0,
+      consecutiveTimeoutDefaultContinueCount: 0,
+      progressCursorByTurn: {},
+      lastCompletedAt: now()
+    };
+    return workflow;
+  }
+
+  private async returnMainPhaseForRevision(
+    workflow: TaskWorkflowState,
+    phase: "design" | "planning",
+    feedback: string
+  ): Promise<Record<string, unknown>> {
+    const developmentDecision: DevelopmentTypeDecision = {
+      type: workflow.developmentType,
+      evidence: workflow.developmentTypeEvidence,
+      missingContext: []
+    };
+    const response = this.buildMainPhaseRevisionResponse(
+      workflow.workspacePath,
+      workflow.sessionAlias,
+      workflow.taskId,
+      phase,
+      workflow.requirementText,
+      workflow.detectionEvidence,
+      developmentDecision,
+      [],
+      `${phase === "design" ? "方案" : "计划"}需要按最新反馈继续修订，当前不能进入下一阶段。`,
+      feedback
+    );
+    await this.cachePendingStartInput(
+      this.toWorkflowKey(workflow.workspacePath, workflow.sessionAlias),
+      this.buildPendingStartInputForPhase(workflow, phase),
+      workflow.sessionAlias,
+      workflow.taskId
+    );
+    await this.deleteWorkflowState(workflow);
+    return response;
+  }
+
+  private async advanceMainDesignApprovalToPlanning(workflow: TaskWorkflowState): Promise<Record<string, unknown>> {
+    const pendingInput = this.buildPendingStartInputForPhase(workflow, "planning");
+    const workflowKey = this.toWorkflowKey(workflow.workspacePath, workflow.sessionAlias);
+    await this.cachePendingStartInput(workflowKey, pendingInput, workflow.sessionAlias, workflow.taskId);
+    await this.deleteWorkflowState(workflow);
+    return this.buildNeedsMainPhaseResponse(
+      workflow.workspacePath,
+      workflow.sessionAlias,
+      workflow.taskId,
+      "planning",
+      pendingInput.requirement_text ?? workflow.requirementText,
+      [
+        ...workflow.detectionEvidence,
+        "主会话方案文档已确认，当前进入计划制定执行方选择。"
+      ],
+      {
+        type: workflow.developmentType,
+        evidence: workflow.developmentTypeEvidence,
+        missingContext: []
+      }
+    );
+  }
+
+  private async advanceMainPlanningApprovalToImplementation(workflow: TaskWorkflowState): Promise<Record<string, unknown>> {
+    const pendingInput = this.buildPendingStartInputForPhase(workflow, "implementation");
+    const workflowKey = this.toWorkflowKey(workflow.workspacePath, workflow.sessionAlias);
+    await this.cachePendingStartInput(workflowKey, pendingInput, workflow.sessionAlias, workflow.taskId);
+    await this.deleteWorkflowState(workflow);
+    return this.buildNeedsImplementationExecutorResponse(workflow.sessionAlias, workflow.taskId, "planning_approve");
+  }
+
+  private buildPendingStartInputForPhase(
+    workflow: Pick<
+      TaskWorkflowState,
+      "workspacePath" | "requirementText" | "sessionAlias" | "taskId" | "developmentType" | "developmentTypeEvidence"
+    >,
+    phase: WorkflowEntryPhase
+  ): ExecuteTaskInput {
+    if (phase === "planning") {
+      const designOutput = buildPhaseDocumentOutput("design", workflow.sessionAlias, workflow.workspacePath);
+      const designPath = designOutput.absolutePath ?? designOutput.relativePath;
+      return {
+        workspace_path: workflow.workspacePath,
+        requirement_text: `${workflow.requirementText}\n\n主会话方案文档已确认，请根据方案文档 ${designPath} 制定计划。`,
+        session_alias: workflow.sessionAlias,
+        task_id: workflow.taskId,
+        action: "start",
+        start_phase: "planning",
+        start_phase_reason: "主会话方案文档已确认，下一步进入计划制定。",
+        start_phase_evidence: ["主会话方案确认完成"],
+        development_type: workflow.developmentType,
+        development_type_evidence: workflow.developmentTypeEvidence
+      };
+    }
+
+    if (phase === "implementation") {
+      const planningOutput = buildPhaseDocumentOutput("planning", workflow.sessionAlias, workflow.workspacePath);
+      const planningPath = planningOutput.absolutePath ?? planningOutput.relativePath;
+      return {
+        workspace_path: workflow.workspacePath,
+        requirement_text: `${workflow.requirementText}\n\n方案和计划已经确认，请根据计划文档 ${planningPath} 进入实施阶段。`,
+        session_alias: workflow.sessionAlias,
+        task_id: workflow.taskId,
+        action: "start",
+        start_phase: "implementation",
+        start_phase_reason: "主会话计划文档已确认，下一步进入实施执行方选择。",
+        start_phase_evidence: ["主会话计划确认完成"],
+        development_type: workflow.developmentType,
+        development_type_evidence: workflow.developmentTypeEvidence
+      };
+    }
+
+    return {
+      workspace_path: workflow.workspacePath,
+      requirement_text: workflow.requirementText,
+      session_alias: workflow.sessionAlias,
+      task_id: workflow.taskId,
+      action: "start",
+      start_phase: "design",
+      start_phase_reason: "主会话方案需要继续修订。",
+      start_phase_evidence: ["主会话方案修订回流"],
+      development_type: workflow.developmentType,
+      development_type_evidence: workflow.developmentTypeEvidence
+    };
+  }
+
+  private canReplaceMainApprovalWorkflow(workflow: TaskWorkflowState, phase: "design" | "planning"): boolean {
+    if (phase === "design") {
+      return workflow.stage === "WAITING_DESIGN_APPROVAL" && workflow.designExecutor === "main";
+    }
+    return workflow.stage === "WAITING_PLAN_APPROVAL" && workflow.planningExecutor === "main";
+  }
+
+  private async deleteWorkflowState(workflow: TaskWorkflowState): Promise<void> {
+    const workflowKey = this.toWorkflowKey(workflow.workspacePath, workflow.sessionAlias);
+    this.workflowByKey.delete(workflowKey);
+    try {
+      await this.store.deleteWorkflow(workflowKey);
+    } catch (error) {
+      this.logger.warn("workflow.delete_failed", {
+        workflowKey,
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 
@@ -4517,6 +4971,7 @@ export class BridgeService {
       attempts: designGate.attempts,
       missingSections: designGate.missingSections
     };
+    workflow.designExecutor = "acp";
     workflow.stage = "WAITING_DESIGN_APPROVAL";
   }
 
@@ -4550,6 +5005,7 @@ export class BridgeService {
       attempts: designGate.attempts,
       missingSections: designGate.missingSections
     };
+    workflow.designExecutor = "acp";
     workflow.stage = "WAITING_DESIGN_APPROVAL";
   }
 
@@ -4583,6 +5039,7 @@ export class BridgeService {
       attempts: planningGate.attempts,
       missingSections: planningGate.missingSections
     };
+    workflow.planningExecutor = "acp";
     workflow.stage = "WAITING_PLAN_APPROVAL";
   }
 
@@ -4616,6 +5073,7 @@ export class BridgeService {
       attempts: planningGate.attempts,
       missingSections: planningGate.missingSections
     };
+    workflow.planningExecutor = "acp";
     workflow.stage = "WAITING_PLAN_APPROVAL";
   }
 

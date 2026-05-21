@@ -87,6 +87,10 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("请直接回复 `1` 或 `2`");
     expect(skill).toContain("方案确认");
     expect(skill).toContain("计划确认");
+    expect(skill).toContain("design_complete");
+    expect(skill).toContain("planning_complete");
+    expect(skill).toContain("必须调用 `design_complete` 回填插件状态机");
+    expect(skill).toContain("必须调用 `planning_complete` 回填插件状态机");
     expect(skill).toContain("如无补充请回复“可以/同意/确认”");
     expect(skill).toContain("确认类判定");
     expect(skill).toContain("补充类判定");

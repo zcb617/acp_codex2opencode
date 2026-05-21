@@ -39,16 +39,18 @@
    - `development_type=bugfix`：读取 `team-delegate` skill 自带 `docs/` 下的可交付 BUG 修改设计/计划指南
    - `development_type=need_user_input`：返回 `NEEDS_USER_INPUT`，要求补充这是新增功能还是 BUG 修改
 6. `action=status`：查询当前阶段进度，并返回 ACP 新输出摘要素材（如有）
-7. `action=design_feedback`：按反馈修订 Design（仍停在待确认）
-8. `action=design_approve`：进入 Planning 文档产出（停在待确认）
-9. `action=planning_feedback`：按反馈修订 Planning（仍停在待确认）
-10. `action=planning_approve`：进入实施执行方选择，不再直接进入实施
-11. `action=continue_wait`：当返回 `NEEDS_USER_DECISION` 时，继续新的持续跟进周期
-12. `action=handoff_to_main`：当返回 `NEEDS_USER_DECISION` 时，转交主会话（自动取消并关闭 ACP 会话）
-13. `action=delivery_test_pass`：主会话已完成真实业务交付测试且测试通过，插件进入完成状态
-14. `action=delivery_test_fail`：主会话已完成真实业务交付测试但测试失败，必须提供失败材料，插件进入整改闭环
-15. `action=remediation_approve`：用户确认整改方案和整改计划后，进入当前整改实施
-16. `action=cancel_follow_up`：完成 3 次整改后仍未通过时，用户取消后续工作，本次任务不声明交付完成
+7. `action=design_complete`：主会话方案文档已落盘，回填后进入方案确认
+8. `action=design_feedback`：按反馈修订 Design（仍停在待确认）
+9. `action=design_approve`：若当前方案由 ACP 编写，则进入 Planning 文档产出；若由主会话编写，则先进入计划执行方选择
+10. `action=planning_complete`：主会话计划文档已落盘，回填后进入计划确认
+11. `action=planning_feedback`：按反馈修订 Planning（仍停在待确认）
+12. `action=planning_approve`：进入实施执行方选择，不再直接进入实施
+13. `action=continue_wait`：当返回 `NEEDS_USER_DECISION` 时，继续新的持续跟进周期
+14. `action=handoff_to_main`：当返回 `NEEDS_USER_DECISION` 时，转交主会话（自动取消并关闭 ACP 会话）
+15. `action=delivery_test_pass`：主会话已完成真实业务交付测试且测试通过，插件进入完成状态
+16. `action=delivery_test_fail`：主会话已完成真实业务交付测试但测试失败，必须提供失败材料，插件进入整改闭环
+17. `action=remediation_approve`：用户确认整改方案和整改计划后，进入当前整改实施
+18. `action=cancel_follow_up`：完成 3 次整改后仍未通过时，用户取消后续工作，本次任务不声明交付完成
 
 `requirements_package`（需求深挖结构化产物）字段：
 

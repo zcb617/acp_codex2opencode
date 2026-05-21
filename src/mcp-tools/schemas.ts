@@ -75,6 +75,8 @@ export const ExecuteTaskSchema = z.object({
   action: z
     .enum([
       "start",
+      "design_complete",
+      "planning_complete",
       "implementation_executor_select",
       "model_confirm",
       "model_select",
