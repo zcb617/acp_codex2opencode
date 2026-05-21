@@ -19,6 +19,9 @@ describe("PT-00 install runbook contract", () => {
     expect(runbook).toContain("ian-think");
     expect(runbook).toContain("~/.codex/skills/team-delegate/docs/");
     expect(runbook).toContain("~/.codex/skills/ian-think/SKILL.md");
+    expect(runbook).toContain("~/.codex/plugins/cache/acp-local/acp-codex2opencode/");
+    expect(runbook).toContain("重装后如果需要验证 plugin cache 是否已刷新");
+    expect(runbook).toContain("计划确认后必须先选择实施执行方");
     expect(runbook).toContain("不能读取用户项目目录下的 `docs/` 或 `docs/superpowers/`");
     expect(runbook).toContain("OPENCODE_CONFIG_CONTENT");
     expect(runbook).toContain("86400000");

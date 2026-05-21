@@ -38,11 +38,14 @@ const clientUiDesignRequirements = [
 
 describe("PT-01 plugin install contract", () => {
   it("should provide a valid plugin manifest and mcp config path", async () => {
+    const pkgRaw = await readFile(join(root, "package.json"), "utf8");
+    const pkg = JSON.parse(pkgRaw) as { version?: string };
     const raw = await readFile(join(root, ".codex-plugin", "plugin.json"), "utf8");
     const manifest = JSON.parse(raw) as Record<string, unknown>;
 
     expect(manifest.name).toBe("acp-codex2opencode");
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/u);
+    expect(manifest.version).toBe(pkg.version);
     expect(manifest.skills).toBe("./skills/");
     expect(manifest.mcpServers).toBe("./.mcp.json");
     const promptList = ((manifest.interface as { defaultPrompt?: string[] })?.defaultPrompt) ?? [];
@@ -178,6 +181,19 @@ describe("PT-01 plugin install contract", () => {
     expect(readme).toContain("current_turn_must_stay_open_without_heartbeat");
     expect(readme).toContain("静默保活等待窗口");
     expect(readme).toContain("持续跟进中");
+  });
+
+  it("should clear only this plugin cache in install and uninstall scripts", async () => {
+    const installScript = await readFile(join(root, "scripts", "install-local.mjs"), "utf8");
+    const uninstallScript = await readFile(join(root, "scripts", "uninstall-local.mjs"), "utf8");
+
+    for (const script of [installScript, uninstallScript]) {
+      expect(script).toContain(".codex");
+      expect(script).toContain("plugins");
+      expect(script).toContain("cache");
+      expect(script).toContain("acp-local");
+      expect(script).toContain("acp-codex2opencode");
+    }
   });
 
   it("should package all design and planning guide docs with the team-delegate skill", async () => {

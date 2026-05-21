@@ -65,12 +65,17 @@ npm run plugin:install-local
 2. 技能文件存在：
    - `~/.codex/skills/team-delegate/SKILL.md`
    - `~/.codex/skills/ian-think/SKILL.md`
-3. 四份指南存在：
+3. plugin cache 已刷新：
+   - `~/.codex/plugins/cache/acp-local/acp-codex2opencode/`
+   - 重装后如果需要验证 plugin cache 是否已刷新，请检查缓存目录中的 `skills/team-delegate/SKILL.md` 是否包含：
+     - `计划确认后必须先选择实施执行方`
+     - `只有用户明确选择 ACP 实施时才需要选择 ACP 执行模型`
+4. 四份指南存在：
    - `~/.codex/skills/team-delegate/docs/可交付开发设计文档编写指南-v0.1.md`
    - `~/.codex/skills/team-delegate/docs/可交付开发计划编写指南-v0.1.md`
    - `~/.codex/skills/team-delegate/docs/可交付BUG修改设计文档编写指南-v0.1.md`
    - `~/.codex/skills/team-delegate/docs/可交付BUG修改计划编写指南-v0.1.md`
-4. 工具可见：
+5. 工具可见：
    - `delegate.task.execute`
    - `delegate.session.init`
    - `delegate.turn.run`

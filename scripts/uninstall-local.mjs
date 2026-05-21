@@ -68,6 +68,14 @@ async function main() {
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
   const projectRoot = path.resolve(scriptDir, "..");
   const marketplaceRoot = path.join(os.homedir(), ".codex-local", "acp-marketplace");
+  const pluginCacheRoot = path.join(
+    os.homedir(),
+    ".codex",
+    "plugins",
+    "cache",
+    MARKETPLACE_NAME,
+    PLUGIN_NAME
+  );
   const codexConfigPath = path.join(os.homedir(), ".codex", "config.toml");
   const codexSkillRoot = path.join(os.homedir(), ".codex", "skills");
   const pluginRef = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
@@ -94,7 +102,8 @@ async function main() {
     await writeFile(codexConfigPath, updatedConfig, "utf8");
   }
 
-  console.log("[D/5] 清理全局 team-delegate 与 ian-think 技能...");
+  console.log("[D/5] 清理当前插件 cache 与全局技能...");
+  await rm(pluginCacheRoot, { recursive: true, force: true });
   for (const skillName of SKILL_NAMES) {
     await rm(path.join(codexSkillRoot, skillName), { recursive: true, force: true });
   }
