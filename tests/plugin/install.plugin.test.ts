@@ -145,6 +145,13 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("缺少最小业务信息");
     expect(skill).toContain("先任务定位，再判断是否需要需求深挖，再决定是否进入方案");
     expect(skill).toContain("不得直接进入 `design`");
+    expect(skill).toContain("是否拦住，不看是不是一句话，也不看字数多少；只看当前信息是否足够支撑下一阶段");
+    expect(skill).toContain("只有同时满足以下条件，才允许从入口继续流向 `design`");
+    expect(skill).toContain("若为“新功能开发”，至少已经明确：业务目标、范围边界、成功标准、约束、优先级");
+    expect(skill).toContain("若为“现有功能升级”，至少已经明确：受影响入口、现有流程范围、相关模块或代码线索、成功标准、约束或优先级");
+    expect(skill).toContain("只要缺少上一条任一关键项，就必须先停在任务定位、上下文补充或需求深挖，不得直接进入 `design`");
+    expect(skill).toContain("面向用户解释为什么被拦住时，禁止把“因为你这是一句话/多句话”当成主理由");
+    expect(skill).toContain("若当前处于“需求补齐/需求深挖前置”，进入原因必须直接点名缺失的关键信息");
     expect(skill).toContain("先判断这是“现有功能升级”还是“新功能开发”");
     expect(skill).toContain("反例（必须判为 `need_user_input`");
     expect(skill).toContain("我给你一个方法论，再补一句‘按这个思路加 AI 功能’。");
