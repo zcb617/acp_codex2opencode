@@ -159,19 +159,25 @@ digraph team_delegate_flow {
 ### 2) `NEEDS_USER_INPUT`
 
 1. 先用业务语言说明：当前需求信息不足，暂不适合直接进入方案阶段。
-2. 如果满足以下任一条件，必须先询问用户是否进入 `ian-think` 需求挖掘，不得直接进入 `design`：
+2. 入口顺序必须先任务定位，再判断是否需要需求深挖，再决定是否进入方案。
+3. 对现有功能升级和新功能开发都必须先完成任务定位；任务定位时，必须先判断这是“现有功能升级”还是“新功能开发”。如果这一步都不稳定，直接回到上下文补充，不得直接进入 `design`。
+4. 如果满足以下任一条件，必须先询问用户是否进入 `ian-think` 需求挖掘，不得直接进入 `design`：
    - 输入仅为“方法论文档/参考资料 + 一句话目标”。
+   - 输入仅为“纯一句话新增需求”，例如“我要增加一个翻译功能，比如翻译截图里的文字，翻译当前选中行的文字。”。
    - 缺少最小业务信息（明确业务目标、边界、成功标准、约束、优先级）中的关键项。
    - 主会话无法稳定判定阶段或开发类型。
-3. 用户选择进入 `ian-think` 时，必须先完成“目标对齐”；目标对齐后还必须进入深度需求挖掘（优先 `brainstorming`，不可用则主会话按同结构兜底）。
-4. 深度需求挖掘完成后，必须回填 `requirements_package`（`objective`、`user_ideas`、`business_scenarios`、`in_scope`、`out_of_scope`、`constraints`、`acceptance_criteria`、`risks`），缺任一项都不得进入 `design/planning`。
-5. 用户不进入 `ian-think` 时，要求其直接补充上下文（文档内容或文档路径），再重新 `action=start`。
-6. 不进入本地开发。
+5. 对“现有功能升级”场景，若当前说不清涉及哪个现有流程、哪个入口、哪个模块，就先补充范围或代码线索，不得直接开始方案。
+6. 对“新功能开发”场景，若当前只有一句话目标、缺少边界/验收/约束/优先级，就先补充最小业务信息，或进入需求深挖，不得直接开始方案。
+7. 用户选择进入 `ian-think` 时，必须先完成“目标对齐”；目标对齐后还必须进入深度需求挖掘（优先 `brainstorming`，不可用则主会话按同结构兜底）。
+8. 深度需求挖掘完成后，必须回填 `requirements_package`（`objective`、`user_ideas`、`business_scenarios`、`in_scope`、`out_of_scope`、`constraints`、`acceptance_criteria`、`risks`），缺任一项都不得进入 `design/planning`。
+9. 用户不进入 `ian-think` 时，要求其直接补充上下文（文档内容或文档路径），再重新 `action=start`。
+10. 不进入本地开发。
 
 反例（必须判为 `need_user_input`，禁止直接进入 `design`）：
 
 1. “我给你一个方法论，再补一句‘按这个思路加 AI 功能’。”
 2. “参考这份资料，帮我优化一下插件。”
+3. “我要增加一个翻译功能，比如翻译截图里的文字，翻译当前选中行的文字。”
 
 ### 3) `NEEDS_MAIN_DESIGN` / `NEEDS_MAIN_PLANNING`
 

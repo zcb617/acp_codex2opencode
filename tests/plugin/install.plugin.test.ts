@@ -141,10 +141,15 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("询问用户是否进入 `ian-think` 需求挖掘");
     expect(skill).toContain("满足以下任一条件");
     expect(skill).toContain("输入仅为“方法论文档/参考资料 + 一句话目标”");
+    expect(skill).toContain("输入仅为“纯一句话新增需求”");
     expect(skill).toContain("缺少最小业务信息");
+    expect(skill).toContain("先任务定位，再判断是否需要需求深挖，再决定是否进入方案");
+    expect(skill).toContain("不得直接进入 `design`");
+    expect(skill).toContain("先判断这是“现有功能升级”还是“新功能开发”");
     expect(skill).toContain("反例（必须判为 `need_user_input`");
     expect(skill).toContain("我给你一个方法论，再补一句‘按这个思路加 AI 功能’。");
     expect(skill).toContain("参考这份资料，帮我优化一下插件。");
+    expect(skill).toContain("我要增加一个翻译功能，比如翻译截图里的文字，翻译当前选中行的文字。");
     expect(skill).not.toContain("监控");
     expect(skill).not.toContain("沉默");
     expect(skill).not.toContain("柔性轮询");
