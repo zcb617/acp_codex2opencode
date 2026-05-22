@@ -163,9 +163,11 @@ digraph team_delegate_flow {
 2. 只给两个选择（默认 1）：
    - `1` 主会话继续实施（默认）
    - `2` ACP 委派实施
-3. 如果用户选择主会话继续实施，调用 `implementation_executor_select` 且传 `implementation_executor=main`；插件闭环在此结束，后续编码、自动化测试、真实交付测试和失败修复全部由主会话负责。
-4. 如果用户选择 ACP 委派实施，调用 `implementation_executor_select` 且传 `implementation_executor=acp`；之后才继续模型确认/选择与 ACP 实施闭环。
-5. 禁止在这个节点跳过用户选择直接进入 `model_confirm`、`model_select` 或 `RUNNING_IMPLEMENTATION`。
+3. 必须先停住等待用户选择实施执行方；禁止静默按默认 1 继续，禁止把默认值当成用户已经选择。
+4. 必须要求用户直接回复 `1` 或 `2`。如果用户没有明确选择，就继续停在这个节点，不得自行代替用户决定。
+5. 如果用户选择主会话继续实施，调用 `implementation_executor_select` 且传 `implementation_executor=main`；插件闭环在此结束，后续编码、自动化测试、真实交付测试和失败修复全部由主会话负责。
+6. 如果用户选择 ACP 委派实施，调用 `implementation_executor_select` 且传 `implementation_executor=acp`；之后才继续模型确认/选择与 ACP 实施闭环。
+7. 在用户选择前，禁止在这个节点跳过用户选择直接进入 `model_confirm`、`model_select` 或 `RUNNING_IMPLEMENTATION`。
 
 ### 2) `NEEDS_USER_INPUT`
 

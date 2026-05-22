@@ -212,4 +212,15 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("cancel_follow_up");
     expect(skill).toContain("不能静默启动新的 ACP 会话");
   });
+
+  it("must block implementation executor selection until the user explicitly replies 1 or 2", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    expect(skill).toContain("必须先停住等待用户选择实施执行方");
+    expect(skill).toContain("禁止静默按默认 1 继续");
+    expect(skill).toContain("禁止把默认值当成用户已经选择");
+    expect(skill).toContain("请直接回复 `1` 或 `2`");
+    expect(skill).toContain("在用户选择前");
+    expect(skill).toContain("禁止在这个节点跳过用户选择直接进入 `model_confirm`、`model_select` 或 `RUNNING_IMPLEMENTATION`");
+  });
 });

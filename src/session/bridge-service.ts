@@ -2657,9 +2657,9 @@ export class BridgeService {
       current_stage: "NEEDS_IMPLEMENTATION_EXECUTOR",
       business_stage: "实施执行方选择",
       business_reason: businessReason,
-      next_business_action: "选择由主会话继续实施，或交给 ACP 进入实施闭环",
+      next_business_action: "选择由主会话继续实施，或交给 ACP 进入实施闭环；请直接回复 `1` 或 `2`",
       user_message:
-        "当前阶段：实施执行方选择。进入原因：方案和计划都已确认，可以进入实施。你现在要做的选择：1）主会话继续实施；2）交给 ACP 实施。选择影响：选主会话后，后续编码、自动化测试和交付测试都由主会话负责；选 ACP 后，进入 ACP 实施闭环。",
+        "当前阶段：实施执行方选择。进入原因：方案和计划都已确认，可以进入实施。你现在要做的选择：1）主会话继续实施；2）交给 ACP 实施。选择影响：选主会话后，后续编码、自动化测试和交付测试都由主会话负责；选 ACP 后，进入 ACP 实施闭环。请直接回复 `1` 或 `2`；在收到明确选择前，当前节点不会继续推进。",
       next_action_required: ["implementation_executor_select"],
       default_option: "1",
       user_options: [

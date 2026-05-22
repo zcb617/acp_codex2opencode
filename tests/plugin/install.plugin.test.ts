@@ -108,6 +108,10 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("只有用户明确选择 ACP 实施时才需要选择 ACP 执行模型");
     expect(skill).toContain("主会话继续实施（默认）");
     expect(skill).toContain("ACP 委派实施");
+    expect(skill).toContain("必须先停住等待用户选择实施执行方");
+    expect(skill).toContain("禁止静默按默认 1 继续");
+    expect(skill).toContain("禁止把默认值当成用户已经选择");
+    expect(skill).toContain("请直接回复 `1` 或 `2`");
     expect(skill).toContain("禁止把 `workflow_status`");
     expect(skill).toContain("实施阶段必须满足 1-2 分钟持续跟进节奏");
     expect(skill).toContain("禁止提前向用户输出暂无进展");

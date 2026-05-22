@@ -573,6 +573,8 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { user_message: string }).user_message).toContain("进入原因：");
     expect((start.data as { user_message: string }).user_message).toContain("你现在要做的选择：");
     expect((start.data as { user_message: string }).user_message).toContain("选择影响：");
+    expect((start.data as { user_message: string }).user_message).toContain("请直接回复 `1` 或 `2`");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("直接回复 `1` 或 `2`");
     expect((start.data as { user_message: string }).user_message).not.toContain("workflow_status");
   });
 
