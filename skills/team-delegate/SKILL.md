@@ -9,11 +9,21 @@ description: Use only when the user explicitly asks for delegation workflow/team
 
 <HARD-GATE>
 在进入委派编码前，必须先完成“主对话阶段判定 + 开发类型判定 -> start 入场”闭环。禁止做以下动作：
+0. 未执行 `delegate.task.preflight` 就直接进入 `delegate.task.execute(action=start)`。
 1. 未完成阶段判定和开发类型判定就直接调用 `delegate.task.execute(action=start)`。
 2. 在 `start` 返回前先创建分支、先改代码、先运行实现命令（编译/测试/截图/启动客户端）。
 3. 调用 `delegate.session.*` / `delegate.turn.*` 低层工具绕过高层入口。
 4. 在 `start` 返回后不按 `workflow_status` / `next_action_required` 推进，私自跳步骤。
 </HARD-GATE>
+
+<PREFLIGHT-FIRST>
+触发团队委派后，先调用 `delegate.task.preflight`，禁止先发 `delegate.task.execute(action=start)`。
+
+1. `preflight` 通过时，必须复用其返回的 `start_phase` 与 `development_type` 进入 `start`。
+2. `preflight` 返回 `NEEDS_USER_INPUT` 时，必须先补齐缺失信息，再重新 `preflight`。
+3. 禁止空参数调用：不得出现 `delegate.task.execute(arguments={})`。
+4. 不允许把“口头判定过了”当成通过，必须有 `preflight` 返回结果作为依据。
+</PREFLIGHT-FIRST>
 
 <PHASE-JUDGEMENT-FIRST>
 触发本技能后：
@@ -83,6 +93,7 @@ Design / Planning 阶段必须读取本 skill 自带 `docs/` 目录里的对应�
 
 ## 铁律
 
+0. **先 preflight，再 start。** `delegate.task.preflight` 是 `delegate.task.execute(action=start)` 的前置步骤。
 1. **先主对话判定阶段和开发类型，再 start。** `start` 必须携带 `start_phase` 和 `development_type`。
 2. **插件管流程，模型不越级。** 模型不得跳过插件直接进入本地实现。
 3. **阶段和开发类型判定由主对话模型完成，插件只编排。** 插件不替代主对话做阶段决策，也不通过关键词穷举猜开发类型。
@@ -313,6 +324,20 @@ digraph team_delegate_flow {
 
 除非用户明确要求短超时，以下调用都不得添加 `timeout_ms`。
 
+入口预检（必须先调）：
+
+```json
+{
+  "workspace_path": "<当前工作目录>",
+  "requirement_text": "<用户原始需求>",
+  "task_id": "<任务ID，可选；未传时按 session_alias 生成>",
+  "session_alias": "<任务别名，可选>",
+  "start_phase": "<design|planning|implementation|need_user_input，可选>",
+  "development_type": "<feature|bugfix|need_user_input，可选>",
+  "missing_context": ["<上下文不足时可选>"]
+}
+```
+
 首次入口（必须）：
 
 ```json
@@ -425,6 +450,7 @@ digraph team_delegate_flow {
 
 若模型产生以下想法，立即停止并回到“调用 `delegate.task.execute` -> 看状态”：
 
+0. “我先空调一次试试”
 1. “我先看代码再说”
 2. “我先给你一个方案确认”
 3. “我先改一点再走插件”

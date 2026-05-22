@@ -55,6 +55,21 @@ export const CloseSchema = z.object({
   timeout_ms: z.number().int().positive().max(MAX_TIMEOUT_MS).optional()
 });
 
+export const PreflightTaskSchema = z.object({
+  workspace_path: z.string().min(1),
+  requirement_text: z.string().min(1),
+  task_id: z.string().min(1).optional(),
+  session_alias: z.string().min(1).optional(),
+  start_phase: z.enum(["design", "planning", "implementation", "need_user_input"]).optional(),
+  start_phase_reason: z.string().min(1).optional(),
+  start_phase_evidence: z.array(z.string().min(1)).optional(),
+  development_type: z.enum(["feature", "bugfix", "need_user_input"]).optional(),
+  development_type_reason: z.string().min(1).optional(),
+  development_type_evidence: z.array(z.string().min(1)).optional(),
+  missing_context: z.array(z.string().min(1)).optional(),
+  timeout_ms: z.number().int().positive().max(MAX_TIMEOUT_MS).optional()
+});
+
 export const ExecuteTaskSchema = z.object({
   workspace_path: z.string().min(1),
   requirement_text: z.string().min(1).optional(),

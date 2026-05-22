@@ -34,6 +34,10 @@ describe("team-delegate skill delivery wording", () => {
   it("must require main-dialog development type judgement before start", async () => {
     const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
 
+    expect(skill).toContain("先 preflight，再 start");
+    expect(skill).toContain("触发团队委派后，先调用 `delegate.task.preflight`");
+    expect(skill).toContain("未执行 `delegate.task.preflight` 就直接进入 `delegate.task.execute(action=start)`");
+    expect(skill).toContain("不得出现 `delegate.task.execute(arguments={})`");
     expect(skill).toContain("开发类型");
     expect(skill).toContain("development_type");
     expect(skill).toContain("feature");

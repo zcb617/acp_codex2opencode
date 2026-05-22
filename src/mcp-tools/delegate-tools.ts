@@ -6,6 +6,7 @@ import {
   CloseSchema,
   ExecuteTaskSchema,
   InitSessionSchema,
+  PreflightTaskSchema,
   ReworkTurnSchema,
   RunTurnSchema,
   SetConfigSchema
@@ -62,6 +63,11 @@ export class DelegateTools {
   public async executeTask(rawInput: unknown): Promise<unknown> {
     const parsed = ExecuteTaskSchema.parse(rawInput);
     return this.service.executeTask(parsed);
+  }
+
+  public async preflightTask(rawInput: unknown): Promise<unknown> {
+    const parsed = PreflightTaskSchema.parse(rawInput);
+    return this.service.preflightTask(parsed);
   }
 
   public static formatError(error: unknown): { code: string; message: string; retryable: boolean } {

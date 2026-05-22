@@ -94,6 +94,11 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("<PHASE-JUDGEMENT-FIRST>");
     expect(skill).toContain("先在主对话内基于上下文判定业务阶段");
     expect(skill).toContain("判定结果必须随 `start_phase` 传入");
+    expect(skill).toContain("`delegate.task.preflight`");
+    expect(skill).toContain("先 preflight，再 start");
+    expect(skill).toContain("触发团队委派后，先调用 `delegate.task.preflight`");
+    expect(skill).toContain("`delegate.task.execute(arguments={})`");
+    expect(skill).toContain("未执行 `delegate.task.preflight` 就直接进入 `delegate.task.execute(action=start)`");
     expect(skill).toContain("开发类型");
     expect(skill).toContain("development_type");
     expect(skill).toContain("BUG 修改");

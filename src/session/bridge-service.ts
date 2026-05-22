@@ -93,6 +93,21 @@ export interface ExecuteTaskInput {
   timeout_ms?: number;
 }
 
+export interface PreflightTaskInput {
+  workspace_path: string;
+  requirement_text: string;
+  task_id?: string;
+  session_alias?: string;
+  start_phase?: WorkflowEntryPhase | "need_user_input";
+  start_phase_reason?: string;
+  start_phase_evidence?: string[];
+  development_type?: DevelopmentType | "need_user_input";
+  development_type_reason?: string;
+  development_type_evidence?: string[];
+  missing_context?: string[];
+  timeout_ms?: number;
+}
+
 export type ExecuteTaskAction =
   | "start"
   | "design_complete"
@@ -1144,6 +1159,72 @@ export class BridgeService {
     }
   }
 
+  public async preflightTask(input: PreflightTaskInput): Promise<BridgeResult<unknown>> {
+    const requestId = newRequestId();
+    let sessionAlias = input.session_alias?.trim() ?? input.task_id?.trim() ?? "";
+    try {
+      this.validateWorkspace(input.workspace_path);
+      const preflightInput: ExecuteTaskInput = {
+        workspace_path: input.workspace_path,
+        requirement_text: input.requirement_text,
+        task_id: input.task_id,
+        session_alias: input.session_alias,
+        start_phase: input.start_phase,
+        start_phase_reason: input.start_phase_reason,
+        start_phase_evidence: input.start_phase_evidence,
+        development_type: input.development_type,
+        development_type_reason: input.development_type_reason,
+        development_type_evidence: input.development_type_evidence,
+        missing_context: input.missing_context,
+        timeout_ms: input.timeout_ms
+      };
+      const identity = await this.resolveTaskIdentity(preflightInput, "start");
+      sessionAlias = identity.sessionAlias;
+      const taskId = identity.taskId;
+      const startDecision = await this.resolvePreflightStartDecision(preflightInput, sessionAlias);
+      const developmentDecision = this.resolveDevelopmentTypeDecision(preflightInput);
+
+      if (startDecision.phase === "need_user_input" || developmentDecision.type === "need_user_input") {
+        const missingContext = Array.from(
+          new Set([...startDecision.missingContext, ...developmentDecision.missingContext])
+        );
+        await this.audit(requestId, "task.preflight.needs-user-input", "codex", "OK", {
+          sessionAlias,
+          taskId,
+          missingContext
+        });
+        return makeResult(
+          requestId,
+          this.buildPreflightNeedsInputResponse(sessionAlias, taskId, startDecision, developmentDecision, missingContext)
+        );
+      }
+
+      await this.audit(requestId, "task.preflight.ready", "codex", "OK", {
+        sessionAlias,
+        taskId,
+        startPhase: startDecision.phase,
+        developmentType: developmentDecision.type
+      });
+      return makeResult(
+        requestId,
+        this.buildPreflightReadyResponse(
+          sessionAlias,
+          taskId,
+          preflightInput.workspace_path,
+          startDecision,
+          developmentDecision
+        )
+      );
+    } catch (error) {
+      const bridgeError = this.normalizeError(error);
+      await this.audit(requestId, "task.preflight", "codex", bridgeError.code, {
+        message: bridgeError.message,
+        sessionAlias
+      });
+      return makeError(requestId, bridgeError);
+    }
+  }
+
   private async resolveTaskIdentity(
     input: ExecuteTaskInput,
     action: ExecuteTaskAction
@@ -2086,6 +2167,31 @@ export class BridgeService {
     await writeFile(this.getModelPreferenceFilePath(), `${JSON.stringify(store, null, 2)}\n`, "utf8");
   }
 
+  private async resolvePreflightStartDecision(
+    input: ExecuteTaskInput,
+    sessionAlias: string
+  ): Promise<StartPhaseDecision> {
+    if (input.start_phase) {
+      return this.resolveStartPhaseDecision(input);
+    }
+
+    const requirementText = input.requirement_text?.trim() ?? "";
+    if (!requirementText) {
+      return this.resolveStartPhaseDecision(input);
+    }
+    const detection = await this.detectWorkflowEntry(
+      input.workspace_path,
+      sessionAlias,
+      requirementText,
+      input.timeout_ms
+    );
+    return {
+      phase: detection.phase,
+      evidence: detection.evidence,
+      missingContext: detection.missingContext
+    };
+  }
+
   private resolveStartPhaseDecision(input: ExecuteTaskInput): StartPhaseDecision {
     const phase = input.start_phase;
     const missingContextFromInput =
@@ -2240,6 +2346,73 @@ export class BridgeService {
       risks: normalizeStringList(input.risks),
       openQuestions: normalizeStringList(input.open_questions),
       source
+    };
+  }
+
+  private buildPreflightNeedsInputResponse(
+    sessionAlias: string,
+    taskId: string,
+    startDecision: StartPhaseDecision,
+    developmentDecision: DevelopmentTypeDecision,
+    missingContext: string[]
+  ): Record<string, unknown> {
+    return {
+      task_id: taskId,
+      session_alias: sessionAlias,
+      workflow_status: "NEEDS_USER_INPUT",
+      current_stage: "PREFLIGHT_NEEDS_INPUT",
+      business_stage: "入口预检",
+      business_reason: "当前信息还不足以安全启动团队委派流程。",
+      next_business_action: "请先补充缺失信息，再重新执行入口预检。",
+      user_message:
+        "当前阶段：入口预检。进入原因：现有信息不足以安全启动团队委派。你现在要做的选择：补充缺失信息并重新预检。选择影响：预检通过后才能启动正式委派流程。",
+      next_action_required: ["provide_context_then_preflight"],
+      detected_start_phase: startDecision.phase === "need_user_input" ? null : startDecision.phase,
+      detection_evidence: startDecision.evidence,
+      ...this.toDevelopmentDecisionPayload(developmentDecision),
+      missing_context: missingContext,
+      preflight: {
+        ready: false,
+        retry_action: "delegate.task.preflight",
+        missing_context: missingContext
+      }
+    };
+  }
+
+  private buildPreflightReadyResponse(
+    sessionAlias: string,
+    taskId: string,
+    workspacePath: string,
+    startDecision: StartPhaseDecision,
+    developmentDecision: DevelopmentTypeDecision
+  ): Record<string, unknown> {
+    if (startDecision.phase === "need_user_input" || developmentDecision.type === "need_user_input") {
+      throw new BridgeError(ErrorCodes.WORKFLOW_INVALID_TRANSITION, "preflight 就绪响应缺少明确阶段或开发类型", false);
+    }
+    return {
+      task_id: taskId,
+      session_alias: sessionAlias,
+      workflow_status: "PREFLIGHT_READY",
+      current_stage: "PREFLIGHT_READY",
+      business_stage: this.toBusinessStage(startDecision.phase),
+      business_reason: "入口预检已完成，当前上下文满足启动团队委派的最小条件。",
+      next_business_action: "请按预检结果调用 start 进入正式流程。",
+      user_message: `当前阶段：${this.toBusinessStage(startDecision.phase)}。进入原因：入口预检已完成阶段与开发类型判定。你现在要做的动作：按预检结果启动团队委派。动作影响：插件将接管流程并推进到对应阶段。`,
+      next_action_required: ["start"],
+      detected_start_phase: startDecision.phase,
+      detection_evidence: startDecision.evidence,
+      ...this.toDevelopmentDecisionPayload(developmentDecision),
+      preflight: {
+        ready: true,
+        recommended_start_payload: {
+          workspace_path: workspacePath,
+          task_id: taskId,
+          session_alias: sessionAlias,
+          action: "start",
+          start_phase: startDecision.phase,
+          development_type: developmentDecision.type
+        }
+      }
     };
   }
 

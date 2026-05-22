@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { createLogger } from "../observability/logger.js";
 import { MetricsRegistry } from "../observability/metrics.js";
-import { ExecuteTaskSchema } from "../mcp-tools/schemas.js";
+import { ExecuteTaskSchema, PreflightTaskSchema } from "../mcp-tools/schemas.js";
 import { DelegateTools } from "../mcp-tools/delegate-tools.js";
 import { BridgeService } from "../session/bridge-service.js";
 
@@ -72,6 +72,16 @@ async function main(): Promise<void> {
     name: "acp-codex2opencode",
     version: "0.1.0"
   });
+
+  server.registerTool(
+    "delegate.task.preflight",
+    {
+      description:
+        "高层入口预检：先完成起始阶段和开发类型的最小判定，再决定是否进入 delegate.task.execute(action=start)。如果信息不足，返回业务化缺失项和补充动作，避免空参数或越级调用。",
+      inputSchema: PreflightTaskSchema
+    },
+    async (args) => toToolResponse(await tools.preflightTask(args))
+  );
 
   server.registerTool(
     "delegate.task.execute",
