@@ -22,5 +22,8 @@ describe("PT-02/PT-03 plugin lifecycle contract", () => {
     for (const toolName of expectedTools) {
       expect(source).toContain(`"${toolName}"`);
     }
+
+    expect(source).toContain("ExecuteTaskPublicSchema");
+    expect(source).toContain("inputSchema: ExecuteTaskPublicSchema");
   });
 });

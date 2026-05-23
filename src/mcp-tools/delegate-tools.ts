@@ -4,8 +4,8 @@ import { BridgeService } from "../session/bridge-service.js";
 import {
   CancelSchema,
   CloseSchema,
-  ExecuteTaskSchema,
   InitSessionSchema,
+  parseExecuteTaskInput,
   PreflightTaskSchema,
   ReworkTurnSchema,
   RunTurnSchema,
@@ -61,7 +61,7 @@ export class DelegateTools {
   }
 
   public async executeTask(rawInput: unknown): Promise<unknown> {
-    const parsed = ExecuteTaskSchema.parse(rawInput);
+    const parsed = parseExecuteTaskInput(rawInput);
     return this.service.executeTask(parsed);
   }
 

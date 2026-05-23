@@ -70,7 +70,7 @@ export const PreflightTaskSchema = z.object({
   timeout_ms: z.number().int().positive().max(MAX_TIMEOUT_MS).optional()
 });
 
-export const ExecuteTaskSchema = z.object({
+export const ExecuteTaskShape = {
   workspace_path: z.string().min(1),
   requirement_text: z.string().min(1).optional(),
   requirements_package: RequirementMiningPackageSchema.optional(),
@@ -116,7 +116,11 @@ export const ExecuteTaskSchema = z.object({
   max_rework_rounds: z.number().int().min(0).max(10).optional(),
   auto_close: z.boolean().optional(),
   timeout_ms: z.number().int().positive().max(MAX_TIMEOUT_MS).optional()
-}).superRefine((value, ctx) => {
+};
+
+export const ExecuteTaskPublicSchema = z.object(ExecuteTaskShape);
+
+export const ExecuteTaskSchema = ExecuteTaskPublicSchema.superRefine((value, ctx) => {
   const action = value.action ?? "start";
   if (action === "start" && !value.requirement_text?.trim()) {
     ctx.addIssue({
@@ -176,3 +180,7 @@ export const ExecuteTaskSchema = z.object({
     });
   }
 });
+
+export function parseExecuteTaskInput(rawInput: unknown) {
+  return ExecuteTaskSchema.parse(rawInput);
+}
