@@ -168,6 +168,7 @@ digraph team_delegate_flow {
 5. 如果用户选择主会话继续实施，调用 `implementation_executor_select` 且传 `implementation_executor=main`；插件闭环在此结束，后续编码、自动化测试、真实交付测试和失败修复全部由主会话负责。
 6. 如果用户选择 ACP 委派实施，调用 `implementation_executor_select` 且传 `implementation_executor=acp`；之后才继续模型确认/选择与 ACP 实施闭环。
 7. 在用户选择前，禁止在这个节点跳过用户选择直接进入 `model_confirm`、`model_select` 或 `RUNNING_IMPLEMENTATION`。
+8. **硬性边界：该节点面向用户只能使用插件定义的业务选项（主会话继续实施 / ACP 委派实施）。禁止把 `coder`、`子代理`、`直接改代码`、`opencode`、`模型选择` 等内部实现语言暴露成此节点的用户选项。这是实施执行方选择，不是主会话内部派工选择；主会话内部是否再派 coder，只能在插件闭环结束后由主会话自行决定，不属于插件业务流程。**
 
 ### 2) `NEEDS_USER_INPUT`
 

@@ -294,4 +294,18 @@ describe("PT-01 plugin install contract", () => {
       }
     }
   });
+  it("should forbid internal implementation language at implementation executor node in skill", async () => {
+    const skill = await readFile(
+      join(root, "skills", "team-delegate", "SKILL.md"),
+      "utf8"
+    );
+
+    expect(skill).toContain("coder");
+    expect(skill).toContain("子代理");
+    expect(skill).toContain("opencode");
+    expect(skill).toContain("模型选择");
+    expect(skill).toContain("不是主会话内部派工选择");
+    expect(skill).toContain("内部实现语言");
+  });
+
 });

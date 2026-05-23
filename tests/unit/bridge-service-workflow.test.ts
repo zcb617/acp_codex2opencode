@@ -2841,6 +2841,44 @@ describe("bridge workflow approvals", () => {
     expect(pu.summary.length).toBeGreaterThan(0);
   });
 
+  it("UT-07: implementation executor response must expose business boundary and block internal language", async () => {
+    const service = mockBridgeService();
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-ut07",
+      action: "start",
+      start_phase: "implementation",
+      development_type: "feature"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_IMPLEMENTATION_EXECUTOR");
+
+    const userMessage = (start.data as { user_message: string }).user_message;
+    expect(userMessage).toContain("不是主会话内部派工选择");
+    expect(userMessage).not.toContain("coder");
+    expect(userMessage).not.toContain("子代理");
+    expect(userMessage).not.toContain("opencode");
+    expect(userMessage).not.toContain("模型选择");
+
+    const nextBusinessAction = (start.data as { next_business_action: string }).next_business_action;
+    expect(nextBusinessAction).toContain("不是主会话内部派工选择");
+
+    const userOptions = (start.data as { user_options: Array<{ label: string; description: string }> }).user_options;
+    expect(userOptions).toHaveLength(2);
+    for (const opt of userOptions) {
+      expect(opt.label).not.toContain("coder");
+      expect(opt.label).not.toContain("子代理");
+      expect(opt.label).not.toContain("opencode");
+      expect(opt.label).not.toContain("模型选择");
+      expect(opt.description).not.toContain("coder");
+      expect(opt.description).not.toContain("子代理");
+      expect(opt.description).not.toContain("opencode");
+      expect(opt.description).not.toContain("模型选择");
+    }
+  });
+
   it('UT-06: skill doc should mention summary usage for concise progress reporting', async () => {
     const fsMod = await import('node:fs/promises');
     const skillText = await fsMod.readFile('skills/team-delegate/SKILL.md', 'utf8');

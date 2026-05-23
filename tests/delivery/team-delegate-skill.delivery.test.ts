@@ -223,4 +223,19 @@ describe("team-delegate skill delivery wording", () => {
     expect(skill).toContain("在用户选择前");
     expect(skill).toContain("禁止在这个节点跳过用户选择直接进入 `model_confirm`、`model_select` 或 `RUNNING_IMPLEMENTATION`");
   });
+  it("must explicitly forbid exposing coder/sub-agent/open-code/model-selection at implementation executor node", async () => {
+    const skill = await readFile("skills/team-delegate/SKILL.md", "utf8");
+
+    // Hard boundary: the skill must ban internal implementation language at NEEDS_IMPLEMENTATION_EXECUTOR
+    expect(skill).toContain("coder");
+    expect(skill).toContain("子代理");
+    expect(skill).toContain("opencode");
+    expect(skill).toContain("模型选择");
+
+    // The node must explicitly describe that it is NOT an internal dispatch choice
+    expect(skill).toContain("不是主会话内部派工选择");
+    expect(skill).toContain("实施执行方选择");
+    expect(skill).toContain("内部实现语言");
+  });
+
 });
