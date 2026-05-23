@@ -41,7 +41,6 @@ describe("delegate tools integration", () => {
 
     await tools.executeTask({
       workspace_path: "D:/repo",
-      requirement_text: "实现一个功能",
       session_alias: "task-001",
       action: "delivery_test_pass",
       feedback_text: "真实业务交付测试通过"
@@ -55,7 +54,6 @@ describe("delegate tools integration", () => {
 
     await tools.executeTask({
       workspace_path: "D:/repo",
-      requirement_text: "实现一个功能",
       session_alias: "task-001",
       action: "cancel_follow_up"
     });
@@ -80,6 +78,24 @@ describe("delegate tools integration", () => {
         session_alias: "task-invalid-development-type",
         action: "start",
         development_type: "unknown"
+      })
+    ).rejects.toThrow();
+    expect(service.executeTask).not.toHaveBeenCalled();
+  });
+
+  it("should reject start without requirement_text", async () => {
+    const service = {
+      executeTask: vi.fn(async () => ({ request_id: "req_0", success: true, data: { ok: true } }))
+    };
+
+    const tools = new DelegateTools(service as never);
+
+    await expect(
+      tools.executeTask({
+        workspace_path: "D:/repo",
+        session_alias: "task-missing-requirement",
+        action: "start",
+        development_type: "feature"
       })
     ).rejects.toThrow();
     expect(service.executeTask).not.toHaveBeenCalled();

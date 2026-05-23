@@ -17,6 +17,7 @@ function createService(): BridgeService {
   hacked.loadContextFromReferencedDocs = vi.fn(async () => ({ content: "", loadedPaths: [] }));
   hacked.loadHistoricalWorkflowContext = vi.fn(async () => "");
   hacked.classifyWorkflowEntryViaModel = vi.fn(async () => null);
+  hacked.audit = vi.fn(async () => undefined);
   return service;
 }
 
@@ -148,5 +149,64 @@ describe("bridge workflow start phase detection", () => {
     expect(chunks).toEqual(['{"phase":"design","missing_context":[],"reason":"ok"}']);
     const parsed = hacked.parseWorkflowEntryModelDecision(chunks.join(""));
     expect(parsed?.phase).toBe("design");
+  });
+
+  it("should return preflight ready when phase can be detected and development type is provided", async () => {
+    const service = createService();
+    const hacked = service as unknown as {
+      classifyWorkflowEntryViaModel: ReturnType<typeof vi.fn>;
+    };
+    hacked.classifyWorkflowEntryViaModel = vi.fn(async () => ({
+      phase: "planning",
+      missingContext: [],
+      reason: "已有设计，直接进入计划"
+    }));
+
+    const result = await service.preflightTask({
+      workspace_path: "D:/repo",
+      session_alias: "alias-preflight-ready",
+      requirement_text: "请继续这个 BUG 修复任务",
+      development_type: "bugfix"
+    });
+
+    expect(result.success).toBe(true);
+    const payload = result.data as {
+      workflow_status: string;
+      preflight: { ready: boolean; recommended_start_payload: { start_phase: string; development_type: string } };
+    };
+    expect(payload.workflow_status).toBe("PREFLIGHT_READY");
+    expect(payload.preflight.ready).toBe(true);
+    expect(payload.preflight.recommended_start_payload.start_phase).toBe("planning");
+    expect(payload.preflight.recommended_start_payload.development_type).toBe("bugfix");
+  });
+
+  it("should return preflight needs user input when development type is missing", async () => {
+    const service = createService();
+    const hacked = service as unknown as {
+      classifyWorkflowEntryViaModel: ReturnType<typeof vi.fn>;
+    };
+    hacked.classifyWorkflowEntryViaModel = vi.fn(async () => ({
+      phase: "implementation",
+      missingContext: [],
+      reason: "上下文显示已进入实施入口"
+    }));
+
+    const result = await service.preflightTask({
+      workspace_path: "D:/repo",
+      session_alias: "alias-preflight-needs-input",
+      requirement_text: "继续推进该任务"
+    });
+
+    expect(result.success).toBe(true);
+    const payload = result.data as {
+      workflow_status: string;
+      next_action_required: string[];
+      missing_context: string[];
+      preflight: { ready: boolean };
+    };
+    expect(payload.workflow_status).toBe("NEEDS_USER_INPUT");
+    expect(payload.next_action_required).toContain("provide_context_then_preflight");
+    expect(payload.missing_context.some((item) => item.includes("development_type"))).toBe(true);
+    expect(payload.preflight.ready).toBe(false);
   });
 });

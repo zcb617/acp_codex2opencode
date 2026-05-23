@@ -55,13 +55,29 @@ export const CloseSchema = z.object({
   timeout_ms: z.number().int().positive().max(MAX_TIMEOUT_MS).optional()
 });
 
-export const ExecuteTaskSchema = z.object({
+export const PreflightTaskSchema = z.object({
   workspace_path: z.string().min(1),
   requirement_text: z.string().min(1),
+  task_id: z.string().min(1).optional(),
+  session_alias: z.string().min(1).optional(),
+  start_phase: z.enum(["design", "planning", "implementation", "need_user_input"]).optional(),
+  start_phase_reason: z.string().min(1).optional(),
+  start_phase_evidence: z.array(z.string().min(1)).optional(),
+  development_type: z.enum(["feature", "bugfix", "need_user_input"]).optional(),
+  development_type_reason: z.string().min(1).optional(),
+  development_type_evidence: z.array(z.string().min(1)).optional(),
+  missing_context: z.array(z.string().min(1)).optional(),
+  timeout_ms: z.number().int().positive().max(MAX_TIMEOUT_MS).optional()
+});
+
+export const ExecuteTaskShape = {
+  workspace_path: z.string().min(1),
+  requirement_text: z.string().min(1).optional(),
   requirements_package: RequirementMiningPackageSchema.optional(),
   task_id: z.string().min(1).optional(),
   session_alias: z.string().min(1).optional(),
   design_planning_executor: z.enum(["main", "acp"]).optional(),
+  implementation_executor: z.enum(["main", "acp"]).optional(),
   development_type: z.enum(["feature", "bugfix", "need_user_input"]).optional(),
   development_type_reason: z.string().min(1).optional(),
   development_type_evidence: z.array(z.string().min(1)).optional(),
@@ -74,6 +90,9 @@ export const ExecuteTaskSchema = z.object({
   action: z
     .enum([
       "start",
+      "design_complete",
+      "planning_complete",
+      "implementation_executor_select",
       "model_confirm",
       "model_select",
       "status",
@@ -97,8 +116,19 @@ export const ExecuteTaskSchema = z.object({
   max_rework_rounds: z.number().int().min(0).max(10).optional(),
   auto_close: z.boolean().optional(),
   timeout_ms: z.number().int().positive().max(MAX_TIMEOUT_MS).optional()
-}).superRefine((value, ctx) => {
+};
+
+export const ExecuteTaskPublicSchema = z.object(ExecuteTaskShape);
+
+export const ExecuteTaskSchema = ExecuteTaskPublicSchema.superRefine((value, ctx) => {
   const action = value.action ?? "start";
+  if (action === "start" && !value.requirement_text?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["requirement_text"],
+      message: "start 动作必须提供 requirement_text"
+    });
+  }
   if (action !== "start" && !value.session_alias && !value.task_id) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -142,4 +172,15 @@ export const ExecuteTaskSchema = z.object({
       message: "model_select 动作必须提供 selected_model"
     });
   }
+  if (action === "implementation_executor_select" && !value.implementation_executor) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["implementation_executor"],
+      message: "implementation_executor_select 动作必须提供 implementation_executor"
+    });
+  }
 });
+
+export function parseExecuteTaskInput(rawInput: unknown) {
+  return ExecuteTaskSchema.parse(rawInput);
+}

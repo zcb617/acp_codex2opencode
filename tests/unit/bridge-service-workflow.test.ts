@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createLogger } from "../../src/observability/logger.js";
 import { MetricsRegistry } from "../../src/observability/metrics.js";
 import { BridgeService } from "../../src/session/bridge-service.js";
@@ -204,15 +204,28 @@ async function startAndConfirmModel(
     start_phase_evidence?: string[];
     missing_context?: string[];
     design_planning_executor?: "main" | "acp";
+    implementation_executor?: "main" | "acp";
     development_type?: "feature" | "bugfix" | "need_user_input";
   }
 ): Promise<Awaited<ReturnType<BridgeService["executeTask"]>>> {
-  const start = await service.executeTask({
+  let start = await service.executeTask({
     development_type: "feature",
     ...input,
     action: "start"
   });
   expect(start.success).toBe(true);
+  if (
+    input.start_phase === "implementation" &&
+    (start.data as { workflow_status?: string }).workflow_status === "NEEDS_IMPLEMENTATION_EXECUTOR"
+  ) {
+    start = await service.executeTask({
+      development_type: "feature",
+      ...input,
+      action: "implementation_executor_select",
+      implementation_executor: input.implementation_executor ?? "acp"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(start.success).toBe(true);
+  }
   expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
 
   const confirmed = await service.executeTask({
@@ -333,6 +346,169 @@ describe("bridge workflow approvals", () => {
     expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
+  it("should enter design approval after main-session design_complete", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "acp-main-design-complete-"));
+    const stateDir = await mkdtemp(join(tmpdir(), "acp-main-design-state-"));
+    const service = mockBridgeService({ stateDir });
+
+    const start = await service.executeTask({
+      workspace_path: workspacePath,
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-main-design-complete",
+      action: "start",
+      start_phase: "design",
+      start_phase_reason: "当前还没有方案，需要先由主会话补方案。",
+      development_type: "feature"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_DESIGN");
+
+    const designOutputPath = (
+      start.data as { required_output_document: { absolute_path: string } }
+    ).required_output_document.absolute_path;
+    await mkdir(dirname(designOutputPath), { recursive: true });
+    await writeFile(designOutputPath, DESIGN_SECTIONS_TEXT, "utf8");
+
+    const completed = await service.executeTask({
+      workspace_path: workspacePath,
+      session_alias: "task-main-design-complete",
+      action: "design_complete"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+
+    expect(completed.success).toBe(true);
+    expect((completed.data as { workflow_status: string }).workflow_status).toBe("WAITING_DESIGN_APPROVAL");
+    expect((completed.data as { business_stage: string }).business_stage).toBe("方案确认");
+    expect((completed.data as { user_message: string }).user_message).toContain("请审阅");
+    expect((completed.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "design_feedback",
+      "design_approve"
+    ]);
+  });
+
+  it("should return planning executor gate after approving a main-session design", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "acp-main-design-approve-"));
+    const stateDir = await mkdtemp(join(tmpdir(), "acp-main-design-approve-state-"));
+    const service = mockBridgeService({ stateDir });
+
+    const start = await service.executeTask({
+      workspace_path: workspacePath,
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-main-design-approve",
+      action: "start",
+      start_phase: "design",
+      start_phase_reason: "当前还没有方案，需要先由主会话补方案。",
+      development_type: "feature"
+    });
+
+    expect(start.success).toBe(true);
+    const designOutputPath = (
+      start.data as { required_output_document: { absolute_path: string } }
+    ).required_output_document.absolute_path;
+    await mkdir(dirname(designOutputPath), { recursive: true });
+    await writeFile(designOutputPath, DESIGN_SECTIONS_TEXT, "utf8");
+
+    const completed = await service.executeTask({
+      workspace_path: workspacePath,
+      session_alias: "task-main-design-approve",
+      action: "design_complete"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(completed.success).toBe(true);
+    expect((completed.data as { workflow_status: string }).workflow_status).toBe("WAITING_DESIGN_APPROVAL");
+
+    const approved = await service.executeTask({
+      workspace_path: workspacePath,
+      session_alias: "task-main-design-approve",
+      action: "design_approve"
+    });
+
+    expect(approved.success).toBe(true);
+    expect((approved.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_PLANNING");
+    expect((approved.data as { business_stage: string }).business_stage).toBe("计划制定");
+    expect((approved.data as { planning_source: { source_type: string; design_document_paths: string[] } }).planning_source.source_type).toBe(
+      "design_document_path"
+    );
+    expect(
+      (approved.data as { planning_source: { design_document_paths: string[] } }).planning_source.design_document_paths[0]
+    ).toContain("task-main-design-approve-design.md");
+  });
+
+  it("should enter plan approval after main-session planning_complete and then require implementation executor", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "acp-main-plan-complete-"));
+    const stateDir = await mkdtemp(join(tmpdir(), "acp-main-plan-state-"));
+    const service = mockBridgeService({ stateDir });
+
+    const start = await service.executeTask({
+      workspace_path: workspacePath,
+      requirement_text: `请根据以下方案制定计划：\n${DESIGN_SECTIONS_TEXT}`,
+      session_alias: "task-main-plan-complete",
+      action: "start",
+      start_phase: "planning",
+      start_phase_reason: "当前已有方案，但还没有计划。",
+      development_type: "feature"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_PLANNING");
+
+    const planningOutputPath = (
+      start.data as { required_output_document: { absolute_path: string } }
+    ).required_output_document.absolute_path;
+    await mkdir(dirname(planningOutputPath), { recursive: true });
+    await writeFile(planningOutputPath, PLANNING_SECTIONS_TEXT, "utf8");
+
+    const completed = await service.executeTask({
+      workspace_path: workspacePath,
+      session_alias: "task-main-plan-complete",
+      action: "planning_complete"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+
+    expect(completed.success).toBe(true);
+    expect((completed.data as { workflow_status: string }).workflow_status).toBe("WAITING_PLAN_APPROVAL");
+    expect((completed.data as { business_stage: string }).business_stage).toBe("计划确认");
+
+    const approved = await service.executeTask({
+      workspace_path: workspacePath,
+      session_alias: "task-main-plan-complete",
+      action: "planning_approve"
+    });
+
+    expect(approved.success).toBe(true);
+    expect((approved.data as { workflow_status: string }).workflow_status).toBe("NEEDS_IMPLEMENTATION_EXECUTOR");
+    expect((approved.data as { business_stage: string }).business_stage).toBe("实施执行方选择");
+    expect((approved.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "implementation_executor_select"
+    ]);
+  });
+
+  it("should restore cached requirement_text for model_confirm continuation", async () => {
+    const service = mockBridgeService();
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-cached-model-confirm",
+      action: "start",
+      start_phase: "design",
+      start_phase_reason: "用户还没有方案，需要先制定方案。",
+      development_type: "feature",
+      design_planning_executor: "acp"
+    });
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
+
+    const confirmed = await service.executeTask({
+      workspace_path: "D:/repo",
+      session_alias: "task-cached-model-confirm",
+      action: "model_confirm",
+      model_confirm_choice: "use_saved_model"
+    });
+
+    expect(confirmed.success).toBe(true);
+    expect((confirmed.data as { workflow_status: string }).workflow_status).toBe("WAITING_DESIGN_APPROVAL");
+  });
+
   it("should require planning to read referenced design document paths", async () => {
     const service = mockBridgeService();
 
@@ -391,11 +567,15 @@ describe("bridge workflow approvals", () => {
     });
 
     expect(start.success).toBe(true);
-    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
-    expect((start.data as { business_stage: string }).business_stage).toBe("计划实施");
-    expect((start.data as { user_message: string }).user_message).toContain("当前已经有了");
-    expect((start.data as { user_message: string }).user_message).toContain("计划实施");
-    expect((start.data as { user_message: string }).user_message).toContain("选择执行模型");
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_IMPLEMENTATION_EXECUTOR");
+    expect((start.data as { business_stage: string }).business_stage).toBe("实施执行方选择");
+    expect((start.data as { user_message: string }).user_message).toContain("当前阶段：实施执行方选择");
+    expect((start.data as { user_message: string }).user_message).toContain("进入原因：");
+    expect((start.data as { user_message: string }).user_message).toContain("你现在要做的选择：");
+    expect((start.data as { user_message: string }).user_message).toContain("选择影响：");
+    expect((start.data as { user_message: string }).user_message).toContain("请直接回复 `1` 或 `2`");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("直接回复 `1` 或 `2`");
+    expect((start.data as { user_message: string }).user_message).not.toContain("workflow_status");
   });
 
   it("should block implementation start when referenced plan document fails strict gate", async () => {
@@ -417,9 +597,25 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_USER_INPUT");
     expect((start.data as { business_stage: string }).business_stage).toBe("计划修订");
     expect((start.data as { user_message: string }).user_message).toContain("计划文档");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("指南");
     expect((start.data as { missing_sections: string[] }).missing_sections.some((item) => item.includes("Task 明细"))).toBe(
       true
     );
+    expect(
+      (start.data as {
+        document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+      }).document_revision_instruction.guide_relative_path
+    ).toBe("docs/可交付开发计划编写指南-v0.1.md");
+    expect(
+      (start.data as {
+        document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+      }).document_revision_instruction.document_type
+    ).toBe("planning");
+    expect(
+      (start.data as {
+        document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+      }).document_revision_instruction.development_type
+    ).toBe("feature");
     expect(hacked.listConfiguredModelsFromOpencode as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
@@ -453,6 +649,106 @@ describe("bridge workflow approvals", () => {
     expect(hacked.initSession as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
+  it("should include the correct design guideline when a design document needs revision", async () => {
+    const cases = [
+      {
+        developmentType: "bugfix" as const,
+        sessionAlias: "task-design-guide-bugfix",
+        expectedGuide: "docs/可交付BUG修改设计文档编写指南-v0.1.md"
+      },
+      {
+        developmentType: "feature" as const,
+        sessionAlias: "task-design-guide-feature",
+        expectedGuide: "docs/可交付开发设计文档编写指南-v0.1.md"
+      }
+    ];
+
+    for (const testCase of cases) {
+      const service = mockBridgeService();
+      const start = await startAndConfirmModel(service, {
+        workspace_path: "D:/repo",
+        requirement_text: START_FROM_DESIGN_REQUIREMENT,
+        session_alias: testCase.sessionAlias,
+        start_phase: "design",
+        design_planning_executor: "acp",
+        development_type: testCase.developmentType
+      });
+
+      expect((start.data as { workflow_status: string }).workflow_status).toBe("WAITING_DESIGN_APPROVAL");
+      expect((start.data as { business_stage: string }).business_stage).toBe("方案确认");
+      expect((start.data as { next_business_action: string }).next_business_action).toContain("指南");
+      expect(
+        (start.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.guide_relative_path
+      ).toBe(testCase.expectedGuide);
+      expect(
+        (start.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.document_type
+      ).toBe("design");
+      expect(
+        (start.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.development_type
+      ).toBe(testCase.developmentType);
+    }
+  });
+
+  it("should include the correct planning guideline when a plan document needs revision", async () => {
+    const cases = [
+      {
+        developmentType: "bugfix" as const,
+        sessionAlias: "task-plan-guide-bugfix",
+        expectedGuide: "docs/可交付BUG修改计划编写指南-v0.1.md"
+      },
+      {
+        developmentType: "feature" as const,
+        sessionAlias: "task-plan-guide-feature",
+        expectedGuide: "docs/可交付开发计划编写指南-v0.1.md"
+      }
+    ];
+
+    for (const testCase of cases) {
+      const service = mockBridgeService();
+      await startAndConfirmModel(service, {
+        workspace_path: "D:/repo",
+        requirement_text: START_FROM_DESIGN_REQUIREMENT,
+        session_alias: testCase.sessionAlias,
+        start_phase: "design",
+        design_planning_executor: "acp",
+        development_type: testCase.developmentType
+      });
+
+      const planning = await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: START_FROM_DESIGN_REQUIREMENT,
+        session_alias: testCase.sessionAlias,
+        action: "design_approve"
+      });
+
+      expect(planning.success).toBe(true);
+      expect((planning.data as { workflow_status: string }).workflow_status).toBe("WAITING_PLAN_APPROVAL");
+      expect((planning.data as { business_stage: string }).business_stage).toBe("计划确认");
+      expect((planning.data as { next_business_action: string }).next_business_action).toContain("指南");
+      expect(
+        (planning.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.guide_relative_path
+      ).toBe(testCase.expectedGuide);
+      expect(
+        (planning.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.document_type
+      ).toBe("planning");
+      expect(
+        (planning.data as {
+          document_revision_instruction: { guide_relative_path: string; document_type: string; development_type: string };
+        }).document_revision_instruction.development_type
+      ).toBe(testCase.developmentType);
+    }
+  });
+
   it("should block planning approve before design approve", async () => {
     const service = mockBridgeService();
     const start = await startAndConfirmModel(service, {
@@ -467,7 +763,7 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { current_model?: string }).current_model).toBe(
       "llm-router-openai-compatible/kimi-for-roo"
     );
-    expect((start.data as { current_agent_mode?: string }).current_agent_mode).toBe("plan");
+    expect((start.data as { current_agent_mode?: string }).current_agent_mode).toBeUndefined();
 
     const invalid = await service.executeTask({
       workspace_path: "D:/repo",
@@ -497,6 +793,8 @@ describe("bridge workflow approvals", () => {
     });
     expect(planning.success).toBe(true);
     expect((planning.data as { workflow_status: string }).workflow_status).toBe("WAITING_PLAN_APPROVAL");
+    expect((planning.data as { user_message: string }).user_message).toContain("请审阅");
+    expect((planning.data as { user_message: string }).user_message).toContain("如无补充请回复“可以/同意/确认”");
 
     const implementationDone = await service.executeTask({
       workspace_path: "D:/repo",
@@ -505,16 +803,90 @@ describe("bridge workflow approvals", () => {
       action: "planning_approve"
     });
     expect(implementationDone.success).toBe(true);
-    expect((implementationDone.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
-    expect((implementationDone.data as { current_model?: string }).current_model).toBe(
-      "llm-router-openai-compatible/kimi-for-roo"
+    expect((implementationDone.data as { workflow_status: string }).workflow_status).toBe(
+      "NEEDS_IMPLEMENTATION_EXECUTOR"
     );
-    expect((implementationDone.data as { current_agent_mode?: string }).current_agent_mode).toBe("build");
+    expect((implementationDone.data as { business_stage: string }).business_stage).toBe("实施执行方选择");
+    expect((implementationDone.data as { user_message: string }).user_message).toContain("请直接回复 `1` 或 `2`");
+    expect((implementationDone.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "implementation_executor_select"
+    ]);
+
+    const mainImplementation = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002",
+      action: "implementation_executor_select",
+      implementation_executor: "main"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(mainImplementation.success).toBe(true);
+    expect((mainImplementation.data as { workflow_status: string }).workflow_status).toBe("TRANSFERRED_TO_MAIN");
+    expect((mainImplementation.data as { user_message: string }).user_message).toContain("主会话继续实施");
+
+    const invalidDeliveryFromMain = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002",
+      action: "delivery_test_pass",
+      feedback_text: "不应允许"
+    });
+    expect(invalidDeliveryFromMain.success).toBe(false);
+  });
+
+  it("should enter model gate only after choosing ACP for implementation", async () => {
+    const service = mockBridgeService();
+    await startAndConfirmModel(service, {
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002-acp",
+      start_phase: "design",
+      design_planning_executor: "acp"
+    });
+
+    const planning = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002-acp",
+      action: "design_approve"
+    });
+    expect(planning.success).toBe(true);
+    expect((planning.data as { workflow_status: string }).workflow_status).toBe("WAITING_PLAN_APPROVAL");
+
+    const implementationChoice = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002-acp",
+      action: "planning_approve"
+    });
+    expect(implementationChoice.success).toBe(true);
+    expect((implementationChoice.data as { workflow_status: string }).workflow_status).toBe(
+      "NEEDS_IMPLEMENTATION_EXECUTOR"
+    );
+
+    const acpImplementation = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002-acp",
+      action: "implementation_executor_select",
+      implementation_executor: "acp"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(acpImplementation.success).toBe(true);
+    expect((acpImplementation.data as { workflow_status: string }).workflow_status).toBe("RUNNING_IMPLEMENTATION");
+    expect((acpImplementation.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+
+    const implementationStatus = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-002-acp",
+      action: "status"
+    });
+    expect(implementationStatus.success).toBe(true);
+    expect((implementationStatus.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
 
     const delivered = await service.executeTask({
       workspace_path: "D:/repo",
       requirement_text: START_FROM_DESIGN_REQUIREMENT,
-      session_alias: "task-002",
+      session_alias: "task-002-acp",
       action: "delivery_test_pass",
       feedback_text: "真实业务交付测试通过"
     });
@@ -538,7 +910,15 @@ describe("bridge workflow approvals", () => {
       action: "start"
     });
     expect(start.success).toBe(true);
-    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_IMPLEMENTATION_EXECUTOR");
+
+    const chooseAcp = await service.executeTask({
+      ...input,
+      action: "implementation_executor_select",
+      implementation_executor: "acp"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+    expect(chooseAcp.success).toBe(true);
+    expect((chooseAcp.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MODEL_CONFIRM");
 
     const done = await service.executeTask({
       ...input,
@@ -548,7 +928,14 @@ describe("bridge workflow approvals", () => {
     });
 
     expect(done.success).toBe(true);
-    expect((done.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((done.data as { workflow_status: string }).workflow_status).toBe("RUNNING_IMPLEMENTATION");
+    expect((done.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+    const status = await service.executeTask({
+      ...input,
+      action: "status"
+    });
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
     const executeTurn = (service as unknown as { executeTurn: ReturnType<typeof vi.fn> }).executeTurn;
     const implementationCall = executeTurn.mock.calls.find((call) => call[2]?.includes("implementation"));
     expect(implementationCall?.[4]).toBe(86_400_000);
@@ -1070,6 +1457,20 @@ describe("bridge workflow approvals", () => {
     expect(policy.timeout_default_deadline_at).toEqual(expect.any(String));
     expect(policy.timeout_default_remaining_seconds).not.toBeNull();
     expect(policy.decision_prompted_at).toEqual(expect.any(String));
+    const followUpRuntime = (
+      status.data as {
+        follow_up_runtime_requirement: {
+          current_turn_must_stay_open_without_heartbeat: boolean;
+          fallback_mode_without_heartbeat: string | null;
+          recheck_action: string | null;
+          hold_until: string | null;
+        };
+      }
+    ).follow_up_runtime_requirement;
+    expect(followUpRuntime.current_turn_must_stay_open_without_heartbeat).toBe(true);
+    expect(followUpRuntime.fallback_mode_without_heartbeat).toBe("same_turn_hold");
+    expect(followUpRuntime.recheck_action).toBe("status");
+    expect(followUpRuntime.hold_until).toEqual(expect.any(String));
   });
 
   it("should auto-continue by timeout_default on a later status poll after the decision window expires", async () => {
@@ -1400,6 +1801,24 @@ describe("bridge workflow approvals", () => {
     expect(hacked.initSession).not.toHaveBeenCalled();
   });
 
+  it("should return business-readable workspace validation errors", async () => {
+    const service = mockBridgeService();
+
+    const missingWorkspace = await service.executeTask({
+      workspace_path: "",
+      requirement_text: "请开始任务",
+      session_alias: "task-workspace-empty",
+      action: "start",
+      start_phase: "design",
+      development_type: "feature"
+    });
+
+    expect(missingWorkspace.success).toBe(false);
+    expect((missingWorkspace.error as { code: string }).code).toBe(ErrorCodes.INVALID_REQUEST);
+    expect((missingWorkspace.error as { message: string }).message).toContain("缺少项目工作目录");
+    expect((missingWorkspace.error as { message: string }).message).not.toContain("workspace_path");
+  });
+
   it("should build feature design and planning prompts with development guides", () => {
     const service = mockBridgeService();
     const hacked = service as unknown as {
@@ -1603,12 +2022,39 @@ describe("bridge workflow approvals", () => {
     });
     expect(start.success).toBe(true);
     expect((start.data as { detected_start_phase: string }).detected_start_phase).toBe("implementation");
-    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("RUNNING_IMPLEMENTATION");
     expect((start.data as { next_action_required: string[] }).next_action_required).toEqual([
+      "status"
+    ]);
+    expect((start.data as { user_message: string }).user_message).toContain("计划实施阶段");
+    const followUpRuntime = (
+      start.data as {
+        follow_up_runtime_requirement: {
+          current_turn_must_stay_open_without_heartbeat: boolean;
+          fallback_mode_without_heartbeat: string | null;
+          recheck_action: string | null;
+          hold_until: string | null;
+        };
+      }
+    ).follow_up_runtime_requirement;
+    expect(followUpRuntime.current_turn_must_stay_open_without_heartbeat).toBe(true);
+    expect(followUpRuntime.fallback_mode_without_heartbeat).toBe("same_turn_hold");
+    expect(followUpRuntime.recheck_action).toBe("status");
+    expect(followUpRuntime.hold_until).toEqual(expect.any(String));
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-007",
+      action: "status"
+    });
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((status.data as { next_action_required: string[] }).next_action_required).toEqual([
       "delivery_test_pass",
       "delivery_test_fail"
     ]);
-    expect((start.data as { user_message: string }).user_message).toContain("还不能判定交付完成");
+    expect((status.data as { user_message: string }).user_message).toContain("还不能判定交付完成");
   });
 
   it("should complete only after delivery test passes", async () => {
@@ -1687,7 +2133,31 @@ describe("bridge workflow approvals", () => {
     });
 
     expect(remediation.success).toBe(true);
-    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("RUNNING_REMEDIATION");
+    expect((remediation.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+    const remediationFollowUpRuntime = (
+      remediation.data as {
+        follow_up_runtime_requirement: {
+          current_turn_must_stay_open_without_heartbeat: boolean;
+          fallback_mode_without_heartbeat: string | null;
+          recheck_action: string | null;
+          hold_until: string | null;
+        };
+      }
+    ).follow_up_runtime_requirement;
+    expect(remediationFollowUpRuntime.current_turn_must_stay_open_without_heartbeat).toBe(true);
+    expect(remediationFollowUpRuntime.fallback_mode_without_heartbeat).toBe("same_turn_hold");
+    expect(remediationFollowUpRuntime.recheck_action).toBe("status");
+    expect(remediationFollowUpRuntime.hold_until).toEqual(expect.any(String));
+
+    const status = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-return",
+      action: "status"
+    });
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
   });
 
   it("should restore the same task ACP session before remediation after a bridge restart", async () => {
@@ -1731,7 +2201,16 @@ describe("bridge workflow approvals", () => {
         session_strategy: "auto"
       })
     );
-    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+    expect((remediation.data as { workflow_status: string }).workflow_status).toBe("RUNNING_REMEDIATION");
+    expect((remediation.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+    const status = await restoredService.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: "需求",
+      session_alias: "task-remediation-session-restore",
+      action: "status"
+    });
+    expect(status.success).toBe(true);
+    expect((status.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
   });
 
   it("should ask the user to decide when the same task ACP session cannot be restored", async () => {
@@ -1897,7 +2376,17 @@ describe("bridge workflow approvals", () => {
         action: "remediation_approve",
         feedback_text: `第 ${round} 次整改方案：修复本轮失败点。\n第 ${round} 次整改计划：修改后复测同一条真实交付链路。`
       });
-      expect((remediation.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
+      expect((remediation.data as { workflow_status: string }).workflow_status).toBe("RUNNING_REMEDIATION");
+      expect((remediation.data as { next_action_required: string[] }).next_action_required).toEqual(["status"]);
+
+      const remediationStatus = await service.executeTask({
+        workspace_path: "D:/repo",
+        requirement_text: "需求",
+        session_alias: "task-remediation-limit",
+        action: "status"
+      });
+      expect(remediationStatus.success).toBe(true);
+      expect((remediationStatus.data as { workflow_status: string }).workflow_status).toBe("NEEDS_DELIVERY_TEST");
 
       const failedAgain = await service.executeTask({
         workspace_path: "D:/repo",
@@ -2069,6 +2558,12 @@ describe("bridge workflow approvals", () => {
     expect(start.success).toBe(true);
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_DESIGN");
     expect((start.data as { default_option: string }).default_option).toBe("1");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("选择");
+    expect((start.data as { user_message: string }).user_message).toContain("当前阶段：方案制定");
+    expect((start.data as { user_message: string }).user_message).toContain("你现在要做的选择：");
+    expect((start.data as { user_message: string }).user_message).toContain("请直接回复 `1` 或 `2`");
+    expect((start.data as { user_message: string }).user_message).toContain("1）主会话执行（默认）");
+    expect((start.data as { user_message: string }).user_message).toContain("2）ACP 委派执行");
     expect(hacked.initSession).not.toHaveBeenCalled();
   });
 
@@ -2088,6 +2583,12 @@ describe("bridge workflow approvals", () => {
     expect(start.success).toBe(true);
     expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_MAIN_PLANNING");
     expect((start.data as { default_option: string }).default_option).toBe("1");
+    expect((start.data as { next_business_action: string }).next_business_action).toContain("选择");
+    expect((start.data as { user_message: string }).user_message).toContain("当前阶段：计划制定");
+    expect((start.data as { user_message: string }).user_message).toContain("请直接回复 `1` 或 `2`");
+    expect((start.data as { user_message: string }).user_message).toContain("1）主会话执行（默认）");
+    expect((start.data as { user_message: string }).user_message).toContain("2）ACP 委派执行");
+    expect((start.data as { user_message: string }).user_message).toContain("选择影响：");
     expect(hacked.initSession).not.toHaveBeenCalled();
   });
   it('UT-01: should return progress_update.summary when ACP has new output', async () => {
@@ -2338,6 +2839,44 @@ describe("bridge workflow approvals", () => {
     const pu = (resumed.data as { progress_update: { has_new_output: boolean; summary: string } }).progress_update;
     expect(pu.has_new_output).toBe(true);
     expect(pu.summary.length).toBeGreaterThan(0);
+  });
+
+  it("UT-07: implementation executor response must expose business boundary and block internal language", async () => {
+    const service = mockBridgeService();
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: START_FROM_DESIGN_REQUIREMENT,
+      session_alias: "task-ut07",
+      action: "start",
+      start_phase: "implementation",
+      development_type: "feature"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_IMPLEMENTATION_EXECUTOR");
+
+    const userMessage = (start.data as { user_message: string }).user_message;
+    expect(userMessage).toContain("不是主会话内部派工选择");
+    expect(userMessage).not.toContain("coder");
+    expect(userMessage).not.toContain("子代理");
+    expect(userMessage).not.toContain("opencode");
+    expect(userMessage).not.toContain("模型选择");
+
+    const nextBusinessAction = (start.data as { next_business_action: string }).next_business_action;
+    expect(nextBusinessAction).toContain("不是主会话内部派工选择");
+
+    const userOptions = (start.data as { user_options: Array<{ label: string; description: string }> }).user_options;
+    expect(userOptions).toHaveLength(2);
+    for (const opt of userOptions) {
+      expect(opt.label).not.toContain("coder");
+      expect(opt.label).not.toContain("子代理");
+      expect(opt.label).not.toContain("opencode");
+      expect(opt.label).not.toContain("模型选择");
+      expect(opt.description).not.toContain("coder");
+      expect(opt.description).not.toContain("子代理");
+      expect(opt.description).not.toContain("opencode");
+      expect(opt.description).not.toContain("模型选择");
+    }
   });
 
   it('UT-06: skill doc should mention summary usage for concise progress reporting', async () => {

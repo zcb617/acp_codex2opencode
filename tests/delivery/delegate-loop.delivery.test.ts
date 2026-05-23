@@ -60,7 +60,6 @@ describe("DS-01~DS-03 delivery contracts", () => {
 
     const status = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
-      requirement_text: "需求",
       session_alias: "delegate-task-001",
       action: "status"
     });
@@ -68,7 +67,6 @@ describe("DS-01~DS-03 delivery contracts", () => {
 
     const continueWait = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
-      requirement_text: "需求",
       session_alias: "delegate-task-001",
       action: "continue_wait",
       decision_source: "timeout_default"
@@ -78,15 +76,36 @@ describe("DS-01~DS-03 delivery contracts", () => {
 
     const handoff = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
-      requirement_text: "需求",
       session_alias: "delegate-task-001",
       action: "handoff_to_main"
     });
     expect(handoff.action).toBe("handoff_to_main");
 
+    const implementationExecutor = ExecuteTaskSchema.parse({
+      workspace_path: "D:/repo/demo",
+      session_alias: "delegate-task-001",
+      action: "implementation_executor_select",
+      implementation_executor: "main"
+    });
+    expect(implementationExecutor.action).toBe("implementation_executor_select");
+    expect(implementationExecutor.implementation_executor).toBe("main");
+
+    const designComplete = ExecuteTaskSchema.parse({
+      workspace_path: "D:/repo/demo",
+      session_alias: "delegate-task-001",
+      action: "design_complete"
+    });
+    expect(designComplete.action).toBe("design_complete");
+
+    const planningComplete = ExecuteTaskSchema.parse({
+      workspace_path: "D:/repo/demo",
+      session_alias: "delegate-task-001",
+      action: "planning_complete"
+    });
+    expect(planningComplete.action).toBe("planning_complete");
+
     const deliveryPass = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
-      requirement_text: "需求",
       session_alias: "delegate-task-001",
       action: "delivery_test_pass",
       feedback_text: "真实业务交付测试通过"
@@ -95,7 +114,6 @@ describe("DS-01~DS-03 delivery contracts", () => {
 
     const deliveryFail = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
-      requirement_text: "需求",
       session_alias: "delegate-task-001",
       action: "delivery_test_fail",
       feedback_text: "失败位置：CLI 输出；实际表现：直接完成；预期表现：等待交付测试"
@@ -105,7 +123,6 @@ describe("DS-01~DS-03 delivery contracts", () => {
     expect(() =>
       ExecuteTaskSchema.parse({
         workspace_path: "D:/repo/demo",
-        requirement_text: "需求",
         session_alias: "delegate-task-001",
         action: "delivery_test_fail"
       })
@@ -113,7 +130,6 @@ describe("DS-01~DS-03 delivery contracts", () => {
 
     const remediationApprove = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
-      requirement_text: "需求",
       session_alias: "delegate-task-001",
       action: "remediation_approve",
       feedback_text: "整改方案：修复失败链路。\n整改计划：执行修改后复测同一条真实交付链路。"
@@ -123,7 +139,6 @@ describe("DS-01~DS-03 delivery contracts", () => {
     expect(() =>
       ExecuteTaskSchema.parse({
         workspace_path: "D:/repo/demo",
-        requirement_text: "需求",
         session_alias: "delegate-task-001",
         action: "remediation_approve"
       })
@@ -131,10 +146,25 @@ describe("DS-01~DS-03 delivery contracts", () => {
 
     const cancelFollowUp = ExecuteTaskSchema.parse({
       workspace_path: "D:/repo/demo",
-      requirement_text: "需求",
       session_alias: "delegate-task-001",
       action: "cancel_follow_up"
     });
     expect(cancelFollowUp.action).toBe("cancel_follow_up");
+
+    expect(() =>
+      ExecuteTaskSchema.parse({
+        workspace_path: "D:/repo/demo",
+        session_alias: "delegate-task-001",
+        action: "start"
+      })
+    ).toThrow();
+
+    expect(() =>
+      ExecuteTaskSchema.parse({
+        workspace_path: "D:/repo/demo",
+        session_alias: "delegate-task-001",
+        action: "implementation_executor_select"
+      })
+    ).toThrow();
   });
 });

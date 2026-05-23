@@ -162,6 +162,14 @@ async function main() {
   const marketplacePluginsDir = path.join(marketplaceRoot, "plugins");
   const marketplaceManifestDir = path.join(marketplaceRoot, ".agents", "plugins");
   const marketplaceManifestPath = path.join(marketplaceManifestDir, "marketplace.json");
+  const pluginCacheRoot = path.join(
+    os.homedir(),
+    ".codex",
+    "plugins",
+    "cache",
+    MARKETPLACE_NAME,
+    PLUGIN_NAME
+  );
   const linkedPluginDir = path.join(marketplacePluginsDir, PLUGIN_NAME);
   const codexConfigPath = path.join(os.homedir(), ".codex", "config.toml");
   const codexSkillRoot = path.join(os.homedir(), ".codex", "skills");
@@ -174,7 +182,7 @@ async function main() {
   const bridgeLogDir = toTomlPath(path.join(bridgeStateDir, "logs"));
   const pluginRef = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
 
-  console.log("[A/8] 检查前置条件...");
+  console.log("[A/9] 检查前置条件...");
   await access(path.join(projectRoot, ".codex-plugin", "plugin.json"), constants.F_OK);
   await access(path.join(projectRoot, "package.json"), constants.F_OK);
   await access(path.join(sourceTeamDelegateSkillDir, "SKILL.md"), constants.F_OK);
@@ -186,7 +194,7 @@ async function main() {
     await access(path.join(sourceIanThinkSkillDir, "scenes", sceneFile), constants.F_OK);
   }
 
-  console.log("[B/8] 构建插件...");
+  console.log("[B/9] 构建插件...");
   if (!skipNpmInstall) {
     run("npm", ["install"], projectRoot);
   }
@@ -194,7 +202,10 @@ async function main() {
     run("npm", ["run", "prepare:plugin"], projectRoot);
   }
 
-  console.log("[C/8] 生成本地 marketplace...");
+  console.log("[C/9] 清理当前插件旧 cache...");
+  await rm(pluginCacheRoot, { recursive: true, force: true });
+
+  console.log("[D/9] 生成本地 marketplace...");
   await rm(marketplaceRoot, { recursive: true, force: true });
   await mkdir(marketplacePluginsDir, { recursive: true });
   await mkdir(marketplaceManifestDir, { recursive: true });
@@ -218,11 +229,11 @@ async function main() {
   };
   await writeFile(marketplaceManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
-  console.log("[D/8] 注册 marketplace...");
+  console.log("[E/9] 注册 marketplace...");
   runIgnoreError("codex", ["plugin", "marketplace", "remove", MARKETPLACE_NAME], projectRoot);
   run("codex", ["plugin", "marketplace", "add", marketplaceRoot], projectRoot);
 
-  console.log("[E/8] 启用插件...");
+  console.log("[F/9] 启用插件...");
   await mkdir(path.dirname(codexConfigPath), { recursive: true });
   let currentConfig = "";
   try {
@@ -239,7 +250,7 @@ async function main() {
   });
   await writeFile(codexConfigPath, mcpUpdatedConfig, "utf8");
 
-  console.log("[F/8] 安装 team-delegate 与 ian-think 技能到全局目录...");
+  console.log("[G/9] 安装 team-delegate 与 ian-think 技能到全局目录...");
   await mkdir(codexSkillRoot, { recursive: true });
   for (const skillName of SKILL_NAMES) {
     await rm(path.join(codexSkillRoot, skillName), { recursive: true, force: true });
@@ -247,7 +258,7 @@ async function main() {
   await cp(sourceTeamDelegateSkillDir, targetTeamDelegateSkillDir, { recursive: true });
   await cp(sourceIanThinkSkillDir, targetIanThinkSkillDir, { recursive: true });
 
-  console.log("[G/8] 安装校验...");
+  console.log("[H/9] 安装校验...");
   await access(path.join(projectRoot, "dist", "plugin", "mcp-server.js"), constants.F_OK);
   await access(marketplaceManifestPath, constants.F_OK);
   await access(path.join(targetTeamDelegateSkillDir, "SKILL.md"), constants.F_OK);
@@ -259,7 +270,7 @@ async function main() {
     await access(path.join(targetIanThinkSkillDir, "scenes", sceneFile), constants.F_OK);
   }
 
-  console.log("[H/8] 完成。请重启 Codex，然后在插件列表确认已启用。");
+  console.log("[I/9] 完成。请重启 Codex，然后在插件列表确认已启用。");
   console.log("INSTALLATION-COMPLETED");
 }
 

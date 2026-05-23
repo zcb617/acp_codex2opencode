@@ -9,6 +9,7 @@ describe("PT-02/PT-03 plugin lifecycle contract", () => {
     const source = await readFile(join(root, "src", "plugin", "mcp-server.ts"), "utf8");
 
     const expectedTools = [
+      "delegate.task.preflight",
       "delegate.task.execute",
       "delegate.session.init",
       "delegate.turn.run",
@@ -21,5 +22,8 @@ describe("PT-02/PT-03 plugin lifecycle contract", () => {
     for (const toolName of expectedTools) {
       expect(source).toContain(`"${toolName}"`);
     }
+
+    expect(source).toContain("ExecuteTaskPublicSchema");
+    expect(source).toContain("inputSchema: ExecuteTaskPublicSchema");
   });
 });

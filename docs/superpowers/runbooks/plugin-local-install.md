@@ -65,12 +65,17 @@ npm run plugin:install-local
 2. 技能文件存在：
    - `~/.codex/skills/team-delegate/SKILL.md`
    - `~/.codex/skills/ian-think/SKILL.md`
-3. 四份指南存在：
+3. plugin cache 已刷新：
+   - `~/.codex/plugins/cache/acp-local/acp-codex2opencode/`
+   - 重装后如果需要验证 plugin cache 是否已刷新，请检查缓存目录中的 `skills/team-delegate/SKILL.md` 是否包含：
+     - `计划确认后必须先选择实施执行方`
+     - `只有用户明确选择 ACP 实施时才需要选择 ACP 执行模型`
+4. 四份指南存在：
    - `~/.codex/skills/team-delegate/docs/可交付开发设计文档编写指南-v0.1.md`
    - `~/.codex/skills/team-delegate/docs/可交付开发计划编写指南-v0.1.md`
    - `~/.codex/skills/team-delegate/docs/可交付BUG修改设计文档编写指南-v0.1.md`
    - `~/.codex/skills/team-delegate/docs/可交付BUG修改计划编写指南-v0.1.md`
-4. 工具可见：
+5. 工具可见：
    - `delegate.task.execute`
    - `delegate.session.init`
    - `delegate.turn.run`
@@ -78,6 +83,29 @@ npm run plugin:install-local
    - `delegate.session.set-config`
    - `delegate.turn.cancel`
    - `delegate.session.close`
+
+### H. 真实 Codex CLI 交付验证入口
+
+1. 打开真实 Codex CLI，并确认当前会话已经加载刚安装的插件。
+2. 使用真实业务语言发起团队委派，例如：
+
+```text
+帮我用团队委派流程完成这个开发任务。设计和计划已经确认，直接进入实施。过程中有进展就告诉我，没动静太久再问我是否接手。
+```
+
+3. 如果进入模型确认或模型选择，按本次任务要求选择对应实施模型。
+4. 一旦插件返回了下一次跟进时间，必须确认当前宿主线程具备真实的自动回来路径：
+   - 若能实际调用 `automation_update`，创建或刷新参数满足 `kind=heartbeat`、`destination=thread`、`status=ACTIVE`
+   - 若当前宿主没有 `automation_update`，但这是一条持续运行的真实 Codex CLI 会话，则主会话不能结束当前轮，必须在同一轮里保留等待窗口并到点后自动回到同一个任务闭环重新查状态
+5. 只有在“既没有 heartbeat，也没有同轮自动续跑”时，才直接记录：
+   - `当前环境无法建立真实自动跟进`
+   - 本次交付测试失败
+   - 不允许再口头承诺“我会继续跟进”
+6. 禁止把以下动作当成交付验证通过证据：
+   - 在当前轮已经结束后再手动重复触发 `status`
+   - 人工补发消息、再次点击“再跟踪”或其他人工补触发动作
+   - 只看内部字段，不观察真实线程是否自动回来
+7. 自动回来路径确认后，按 [docs/团队委派交付测试必过表.md](/var/work/acp_codex2opencode/docs/团队委派交付测试必过表.md) 逐项执行 DT-01 到 DT-13。任一项不通过，本次真实交付验证结论就是失败。
 
 ## 卸载步骤
 
