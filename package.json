@@ -18,7 +18,9 @@
     "dev:server": "node --enable-source-maps dist/plugin/mcp-server.js",
     "prepare:plugin": "npm run build && node scripts/prepare-plugin.cjs",
     "plugin:install-local": "node scripts/install-local.mjs",
-    "plugin:uninstall-local": "node scripts/uninstall-local.mjs"
+    "plugin:uninstall-local": "node scripts/uninstall-local.mjs",
+    "plugin:install-claude": "node scripts/install-claude.mjs",
+    "plugin:uninstall-claude": "node scripts/uninstall-claude.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

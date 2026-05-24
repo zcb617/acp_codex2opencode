@@ -4,7 +4,10 @@ const path = require("node:path");
 const root = process.cwd();
 const distEntry = path.join(root, "dist", "plugin", "mcp-server.js");
 const manifest = path.join(root, ".codex-plugin", "plugin.json");
+const claudeManifest = path.join(root, ".claude-plugin", "plugin.json");
+const claudeMarketplace = path.join(root, ".claude-plugin", "marketplace.json");
 const mcpConfig = path.join(root, ".mcp.json");
+const claudeMcpConfig = path.join(root, "mcp-servers.json");
 const teamDelegateSkillDir = path.join(root, "skills", "team-delegate");
 const ianThinkSkillDir = path.join(root, "skills", "ian-think");
 const guideFiles = [
@@ -31,6 +34,9 @@ function assertFile(filePath) {
 assertFile(distEntry);
 assertFile(manifest);
 assertFile(mcpConfig);
+assertFile(claudeManifest);
+assertFile(claudeMarketplace);
+assertFile(claudeMcpConfig);
 assertFile(path.join(teamDelegateSkillDir, "SKILL.md"));
 for (const guideFile of guideFiles) {
   assertFile(path.join(teamDelegateSkillDir, "docs", guideFile));
