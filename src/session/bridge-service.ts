@@ -128,6 +128,12 @@ export type ExecuteTaskAction =
   | "restart_acp_session"
   | "cancel_follow_up";
 
+type PendingStartGate = "implementation_executor" | "model_gate";
+
+type PendingStartInput = ExecuteTaskInput & {
+  _pending_gate?: PendingStartGate;
+};
+
 type ExecuteTaskInputWithRequirement = ExecuteTaskInput & {
   requirement_text: string;
 };
@@ -626,7 +632,7 @@ export class BridgeService {
 
   private readonly workflowByKey = new Map<string, TaskWorkflowState>();
 
-  private readonly pendingStartInputByKey = new Map<string, ExecuteTaskInput>();
+  private readonly pendingStartInputByKey = new Map<string, PendingStartInput>();
 
   private readonly pendingRequirementMiningByTask = new Map<string, { sessionAlias: string; requestedAt: string }>();
 
@@ -1278,6 +1284,11 @@ export class BridgeService {
     return undefined;
   }
 
+  private sanitizeStartInput(input: ExecuteTaskInputWithRequirement): ExecuteTaskInputWithRequirement {
+    const { implementation_executor: _ignored, ...sanitized } = input;
+    return sanitized;
+  }
+
   private async handleStartWithModelGate(
     requestId: string,
     input: ExecuteTaskInput,
@@ -1285,7 +1296,7 @@ export class BridgeService {
     taskId: string,
     workflowKey: string
   ): Promise<BridgeResult<unknown>> {
-    const startInput = this.requireRequirementText(input, "start");
+    const startInput = this.sanitizeStartInput(this.requireRequirementText(input, "start"));
     await this.cleanupExpiredOtherTaskWorkflows(startInput.workspace_path, taskId);
     const startDecision = this.resolveStartPhaseDecision(startInput);
     const developmentDecision = this.resolveDevelopmentTypeDecision(startInput);
@@ -1382,9 +1393,8 @@ export class BridgeService {
       }
     }
 
-    const implementationExecutor = this.resolveImplementationExecutor(startInput);
-    if (startDecision.phase === "implementation" && implementationExecutor !== "acp") {
-      await this.cachePendingStartInput(workflowKey, startInput, sessionAlias, taskId);
+    if (startDecision.phase === "implementation") {
+      await this.cachePendingStartInput(workflowKey, startInput, sessionAlias, taskId, "implementation_executor");
       await this.audit(requestId, "task.execute.start.needs-implementation-executor", "codex", "OK", {
         sessionAlias
       });
@@ -1418,7 +1428,7 @@ export class BridgeService {
       );
     }
 
-    await this.cachePendingStartInput(workflowKey, startInput, sessionAlias, taskId);
+    await this.cachePendingStartInput(workflowKey, startInput, sessionAlias, taskId, "model_gate");
     const modelGate = await this.resolveModelGate(startInput.workspace_path);
     if (modelGate.savedModel && modelGate.savedModelAvailable) {
       await this.audit(requestId, "task.execute.start.needs-model-confirm", "codex", "OK", {
@@ -1473,7 +1483,13 @@ export class BridgeService {
     if (!choice) {
       throw new BridgeError(ErrorCodes.INVALID_REQUEST, "model_confirm 需要 model_confirm_choice", false);
     }
-    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input, action);
+    const effectiveInput = await this.resolvePendingStartInputForGate(
+      workflowKey,
+      input,
+      action,
+      "model_gate",
+      "当前还没有进入 ACP 模型确认阶段，不能直接确认模型。"
+    );
     const startDecision = this.resolveStartPhaseDecision(effectiveInput);
     const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
     const modelGate = await this.resolveModelGate(effectiveInput.workspace_path);
@@ -1534,7 +1550,13 @@ export class BridgeService {
     if (!selectedModel) {
       throw new BridgeError(ErrorCodes.INVALID_REQUEST, "model_select 需要 selected_model", false);
     }
-    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input, action);
+    const effectiveInput = await this.resolvePendingStartInputForGate(
+      workflowKey,
+      input,
+      action,
+      "model_gate",
+      "当前还没有进入 ACP 模型选择阶段，不能直接选择模型。"
+    );
     const startDecision = this.resolveStartPhaseDecision(effectiveInput);
     const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
     const modelGate = await this.resolveModelGate(effectiveInput.workspace_path);
@@ -1615,7 +1637,13 @@ export class BridgeService {
       return makeResult(requestId, this.buildWorkflowStatusResponse(workflow));
     }
 
-    const effectiveInput = await this.resolveEffectiveStartInput(workflowKey, input, "implementation_executor_select");
+    const effectiveInput = await this.resolvePendingStartInputForGate(
+      workflowKey,
+      input,
+      "implementation_executor_select",
+      "implementation_executor",
+      "当前还没有进入实施执行方选择，不能直接提交 implementation_executor_select。"
+    );
     const startDecision = this.resolveStartPhaseDecision(effectiveInput);
     const developmentDecision = this.resolveDevelopmentTypeDecision(effectiveInput);
     if (startDecision.phase !== "implementation") {
@@ -1648,7 +1676,7 @@ export class BridgeService {
       ...effectiveInput,
       implementation_executor: "acp"
     };
-    await this.cachePendingStartInput(workflowKey, startInputWithExecutor, sessionAlias, taskId);
+    await this.cachePendingStartInput(workflowKey, startInputWithExecutor, sessionAlias, taskId, "model_gate");
     const modelGate = await this.resolveModelGate(startInputWithExecutor.workspace_path);
     if (modelGate.savedModel && modelGate.savedModelAvailable) {
       await this.audit(requestId, "task.execute.implementation-executor-select.needs-model-confirm", "codex", "OK", {
@@ -1803,7 +1831,7 @@ export class BridgeService {
       });
     }
     if (startDecision.phase === "implementation" && implementationExecutor !== "acp") {
-      await this.cachePendingStartInput(workflowKey, input, sessionAlias, taskId);
+      await this.cachePendingStartInput(workflowKey, input, sessionAlias, taskId, "implementation_executor");
       await this.audit(requestId, "task.execute.start.needs-implementation-executor", "codex", "OK", {
         sessionAlias,
         selectedModel
@@ -1891,10 +1919,12 @@ export class BridgeService {
     workflowKey: string,
     input: ExecuteTaskInput,
     sessionAlias: string,
-    taskId: string
+    taskId: string,
+    pendingGate?: PendingStartGate
   ): Promise<void> {
-    const pendingInput: ExecuteTaskInput = {
+    const pendingInput: PendingStartInput = {
       ...input,
+      _pending_gate: pendingGate,
       session_alias: sessionAlias,
       task_id: taskId,
       action: "start"
@@ -1933,18 +1963,14 @@ export class BridgeService {
     }
   }
 
-  private async resolveEffectiveStartInput(
-    workflowKey: string,
-    input: ExecuteTaskInput,
-    action: ExecuteTaskAction
-  ): Promise<ExecuteTaskInputWithRequirement> {
+  private async loadPendingStartInput(workflowKey: string): Promise<PendingStartInput | undefined> {
     let pending = this.pendingStartInputByKey.get(workflowKey);
     if (!pending) {
       try {
         const persisted = await this.store.findPendingStartByKey(workflowKey);
         const payload = persisted?.payload;
         if (payload && typeof payload === "object") {
-          pending = payload as unknown as ExecuteTaskInput;
+          pending = payload as unknown as PendingStartInput;
           this.pendingStartInputByKey.set(workflowKey, pending);
         }
       } catch (error) {
@@ -1955,6 +1981,15 @@ export class BridgeService {
         );
       }
     }
+    return pending;
+  }
+
+  private async resolveEffectiveStartInput(
+    workflowKey: string,
+    input: ExecuteTaskInput,
+    action: ExecuteTaskAction
+  ): Promise<ExecuteTaskInputWithRequirement> {
+    const pending = await this.loadPendingStartInput(workflowKey);
     if (!pending) {
       return this.requireRequirementText(
         {
@@ -1964,13 +1999,38 @@ export class BridgeService {
         action
       );
     }
+    const { _pending_gate: _ignoredPendingGate, ...pendingWithoutGate } = pending;
     return this.requireRequirementText(
       {
-      ...pending,
-      ...input,
-      action: "start",
-      session_alias: input.session_alias ?? pending.session_alias,
-      task_id: input.task_id ?? pending.task_id
+        ...pendingWithoutGate,
+        ...input,
+        action: "start",
+        session_alias: input.session_alias ?? pending.session_alias,
+        task_id: input.task_id ?? pending.task_id
+      },
+      action
+    );
+  }
+
+  private async resolvePendingStartInputForGate(
+    workflowKey: string,
+    input: ExecuteTaskInput,
+    action: ExecuteTaskAction,
+    expectedGate: PendingStartGate,
+    missingGateMessage: string
+  ): Promise<ExecuteTaskInputWithRequirement> {
+    const pending = await this.loadPendingStartInput(workflowKey);
+    if (!pending || pending._pending_gate !== expectedGate) {
+      throw new BridgeError(ErrorCodes.WORKFLOW_INVALID_TRANSITION, missingGateMessage, false);
+    }
+    const { _pending_gate: _ignoredPendingGate, ...pendingWithoutGate } = pending;
+    return this.requireRequirementText(
+      {
+        ...pendingWithoutGate,
+        ...input,
+        action: "start",
+        session_alias: input.session_alias ?? pending.session_alias,
+        task_id: input.task_id ?? pending.task_id
       },
       action
     );
@@ -3769,7 +3829,13 @@ export class BridgeService {
   private async advanceMainPlanningApprovalToImplementation(workflow: TaskWorkflowState): Promise<Record<string, unknown>> {
     const pendingInput = this.buildPendingStartInputForPhase(workflow, "implementation");
     const workflowKey = this.toWorkflowKey(workflow.workspacePath, workflow.sessionAlias);
-    await this.cachePendingStartInput(workflowKey, pendingInput, workflow.sessionAlias, workflow.taskId);
+    await this.cachePendingStartInput(
+      workflowKey,
+      pendingInput,
+      workflow.sessionAlias,
+      workflow.taskId,
+      "implementation_executor"
+    );
     await this.deleteWorkflowState(workflow);
     return this.buildNeedsImplementationExecutorResponse(workflow.sessionAlias, workflow.taskId, "planning_approve");
   }

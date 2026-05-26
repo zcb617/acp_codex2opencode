@@ -12,8 +12,10 @@
   5. 主会话却直接提交 `implementation_executor_select(acp)`，并把流程推进到模型确认
 - 本计划目标：
   1. 把 `NEEDS_IMPLEMENTATION_EXECUTOR` 补成对主会话也生效的硬闸门
-  2. 锁死“用户业务选择”和“主会话内部派工”两层边界
-  3. 用自动化验证和真实交付测试锁住这条越权代选回归
+  2. 切断 `start` 阶段提前注入 `implementation_executor=acp` 的旁路
+  3. 让 `implementation_executor_select` 只能发生在插件已发出的实施执行方选择节点上
+  4. 清掉测试里默认自动补 `acp` 的假设
+  5. 用自动化验证和真实交付测试锁住这条越权代选回归
 - 本计划不处理：
   1. `implementation_executor_select` 参数协议改造
   2. ACP 实施、持续跟进和整改闭环的结构重构
@@ -23,25 +25,26 @@
 
 | 设计目标 | 实施任务 | 自动化验证 | 交付测试验证 | 状态 |
 |---|---|---|---|---|
-| `NEEDS_IMPLEMENTATION_EXECUTOR` 必须成为对主会话也生效的硬闸门 | Task 01, Task 02, Task 03 | UT-01, UT-02, UT-04 | DT-01 | 待实施 |
-| 用户未明确回复 `1/2` 前，主会话不得调用 `implementation_executor_select` | Task 01, Task 02, Task 03 | UT-01, UT-03, UT-04 | DT-01 | 待实施 |
-| 主会话不得把 `coder/子代理` 暴露成该节点业务选项 | Task 01, Task 03 | UT-02, UT-03 | DT-01 | 待实施 |
+| `NEEDS_IMPLEMENTATION_EXECUTOR` 必须成为对主会话也生效的硬闸门 | Task 01, Task 02, Task 03 | UT-01, UT-02, UT-05 | DT-01 | 待实施 |
+| `start` 阶段不得提前接受 `implementation_executor` | Task 01, Task 03 | UT-01, UT-03 | DT-01 | 待实施 |
+| 用户未明确回复 `1/2` 前，主会话不得调用 `implementation_executor_select` | Task 01, Task 02, Task 03 | UT-02, UT-03, UT-05 | DT-01 | 待实施 |
+| 主会话不得把 `coder/子代理` 暴露成该节点业务选项 | Task 02, Task 03 | UT-04, UT-05 | DT-01 | 待实施 |
 | 用户选择 `main` 后，插件闭环结束；内部是否派 coder 属于后置内部策略 | Task 01, Task 02 | UT-01, UT-02 | DT-02 | 待实施 |
-| 安装产物、构建产物与真实交付测试都保留该边界 | Task 03, Task 04 | UT-03, UT-05, UT-06 | DT-01, DT-02, DT-03 | 待实施 |
+| 安装产物、构建产物与真实交付测试都保留该边界 | Task 02, Task 03, Task 04 | UT-04, UT-05, UT-06 | DT-01, DT-02, DT-03 | 待实施 |
 
 ## 3. 实施任务拆分
 
-### Task 01: 补实施入口的宿主级硬闸门规则
+### Task 01: 切断实施入口的 `implementation_executor` 旁路
 
 **业务目标：**
 
-让主会话在收到 `NEEDS_IMPLEMENTATION_EXECUTOR` 后，必须停住等待用户选择，不得套用“优先派 coder”之类的内部协作策略替用户做决定。
+让主会话即使在 `start` 阶段提前带入 `implementation_executor=acp`，插件也不会接受该值，而是继续停在“实施执行方选择”。
 
 **对应设计目标：**
 
 - `NEEDS_IMPLEMENTATION_EXECUTOR` 必须成为对主会话也生效的硬闸门
+- `start` 阶段必须完全屏蔽 `implementation_executor`
 - 用户未明确回复 `1/2` 前，主会话不得调用 `implementation_executor_select`
-- 主会话不得把 `coder/子代理` 暴露成该节点业务选项
 
 **设计来源：**
 
@@ -50,69 +53,57 @@
 
 **修改范围：**
 
-- `skills/team-delegate/SKILL.md`
-- `tests/delivery/team-delegate-skill.delivery.test.ts`
-- `tests/plugin/install.plugin.test.ts`
+- `src/session/bridge-service.ts`
+- `tests/unit/bridge-service-workflow.test.ts`
 
 **文件范围：**
 
-- `skills/team-delegate/SKILL.md`
-- `tests/delivery/team-delegate-skill.delivery.test.ts`
-- `tests/plugin/install.plugin.test.ts`
+- `src/session/bridge-service.ts`
+- `tests/unit/bridge-service-workflow.test.ts`
 
 **实施步骤：**
 
-1. 在 `NEEDS_IMPLEMENTATION_EXECUTOR` 规则段补主会话宿主级硬闸门要求。
-2. 明确写出：未收到用户明确 `1/2` 前，不得调用 `implementation_executor_select`。
-3. 明确写出：不得把 `coder/子代理/opencode/模型选择` 暴露成该节点业务选项。
-4. 明确写出：用户选 `main` 后插件闭环结束，内部是否派 coder 属于后置内部策略。
-5. 同步补 skill 文本断言和安装产物断言。
+1. 在 `start` 的 implementation 入口路径里定位 `implementation_executor` 读取点。
+2. 修改 `start` 路径：即使调用方提前传了 `implementation_executor`，也不得直接进入 ACP 模型确认。
+3. 保证 implementation 入口一律先返回 `NEEDS_IMPLEMENTATION_EXECUTOR`。
+4. 补单测，锁住“`start` 传 `implementation_executor=acp` 仍必须停在实施执行方选择”。
 
 **伪代码：**
 
 ```text
-输入：workflow_status = NEEDS_IMPLEMENTATION_EXECUTOR + user_options = [main, acp]
-if 用户尚未明确回复 1 或 2:
-  只输出业务阶段、影响、二选一提示
-  禁止调用 implementation_executor_select
-  禁止输出 coder/子代理/opencode/模型选择
-if 用户回复 1:
-  调用 implementation_executor_select(main)
-  插件闭环结束
-if 用户回复 2:
-  调用 implementation_executor_select(acp)
-输出：只有用户明确选择后，流程才离开实施执行方选择
+输入：start_phase = implementation + implementation_executor = acp
+忽略或拒绝 implementation_executor
+缓存不含 implementation_executor 的 startInput
+输出 NEEDS_IMPLEMENTATION_EXECUTOR
 ```
 
 **自动化验证：**
 
-- `tests/delivery/team-delegate-skill.delivery.test.ts`
-- `tests/plugin/install.plugin.test.ts`
+- `tests/unit/bridge-service-workflow.test.ts`
 
 **交付测试影响：**
 
-这是防止主会话越权代选的第一层门禁。
+这是切断“开始吧被误带成继续 ACP 实施”的第一层硬闸门。
 
 **对应交付场景：**
 
-- 用户进入实施执行方选择后，先不回复 `1/2`
-- 观察主会话是否仍暴露 `coder/子代理`
-- 观察主会话是否仍越权提交 `implementation_executor_select`
+- 用户进入实施阶段时，即使主会话误把“开始吧”理解成继续 ACP，也必须先停在实施执行方选择
 
 **完成标准：**
 
-- skill 规则中出现完整宿主禁行要求。
-- 安装产物断言同步覆盖该规则。
+- `start` 路径不再接受提前注入的 `implementation_executor`。
+- 单测能稳定抓住这条旁路。
 
-### Task 02: 强化 bridge-service 在实施入口的结构化边界提示
+### Task 02: 给 `implementation_executor_select` 加节点上下文校验，并强化边界表达
 
 **业务目标：**
 
-让首次返回和恢复态返回 `NEEDS_IMPLEMENTATION_EXECUTOR` 时，都更明确表达“当前是实施执行方选择，不是主会话内部派工选择”。
+让 `implementation_executor_select` 只能发生在插件已先发出“实施执行方选择”之后，并让首返/恢复态都更明确表达“当前是实施执行方选择，不是主会话内部派工选择”。
 
 **对应设计目标：**
 
 - `NEEDS_IMPLEMENTATION_EXECUTOR` 必须成为对主会话也生效的硬闸门
+- 用户未明确回复 `1/2` 前，主会话不得调用 `implementation_executor_select`
 - 用户选择 `main` 后，插件闭环结束；内部是否派 coder 属于后置内部策略
 
 **设计来源：**
@@ -133,22 +124,20 @@ if 用户回复 2:
 
 1. 检查首次返回 `buildNeedsImplementationExecutorResponse` 的字段与文案。
 2. 检查恢复态 `status` 分支同一节点的字段与文案。
-3. 补更强的结构化边界字段或文案，明确这不是主会话内部派工选择。
-4. 保持现有 `main/acp` 状态迁移和动作协议不变。
-5. 补单元测试，锁住首返与恢复态的一致边界表达。
+3. 给 `implementation_executor_select` 的“无活动 workflow”分支增加上下文校验，只允许消费插件已缓存的实施入口上下文。
+4. 补更强的结构化边界字段或文案，明确这不是主会话内部派工选择。
+5. 保持现有 `main/acp` 状态迁移和动作协议不变。
+6. 补单元测试，锁住首返与恢复态的一致边界表达，以及“无上下文不得直接 implementation_executor_select”。
 
 **伪代码：**
 
 ```text
-输入：进入 NEEDS_IMPLEMENTATION_EXECUTOR 的 workflow
-user_options = [主会话继续实施, ACP 委派实施]
-boundary_hint = "这是实施执行方选择，不是主会话内部派工选择"
-if 用户未选择:
-  next_action_required = [implementation_executor_select]
-  不输出任何 ACP 模型确认提示
-if option == main:
-  说明插件闭环结束，后续由主会话负责
-输出：首返与恢复态都带一致边界提示
+输入：implementation_executor_select(main|acp)
+if 没有活动 workflow 且没有已缓存实施入口上下文:
+  拒绝继续推进
+if 有实施入口上下文:
+  允许消费 main/acp 选择
+输出：只有经过实施执行方选择节点后，才允许离开该节点
 ```
 
 **自动化验证：**
@@ -157,7 +146,7 @@ if option == main:
 
 **交付测试影响：**
 
-这是让真实入口首屏就把边界说清楚的第二层门禁。
+这是让“先经过节点，再消费选择”的第二层硬闸门。
 
 **对应交付场景：**
 
@@ -167,16 +156,18 @@ if option == main:
 **完成标准：**
 
 - 首返与恢复态都明确表达“不是主会话内部派工选择”。
+- 脱离实施入口上下文时，不允许直接 `implementation_executor_select`。
 - 仍只暴露 `main/acp` 两项业务分流。
 
-### Task 03: 先补红灯测试，再把边界锁成回归护栏
+### Task 03: 清掉测试里的默认 ACP 假设，并把边界锁成回归护栏
 
 **业务目标：**
 
-先证明当前自动化验证抓不住“主会话越权代选”，再在修复后把这条链路锁成长期护栏。
+先清掉单测 helper 自动补 `implementation_executor_select(acp)` 的默认假设，再在修复后把这条链路锁成长期护栏。
 
 **对应设计目标：**
 
+- `start` 阶段不得提前接受 `implementation_executor`
 - 用户未明确回复 `1/2` 前，主会话不得调用 `implementation_executor_select`
 - 主会话不得把 `coder/子代理` 暴露成该节点业务选项
 - 安装产物、构建产物与真实交付测试都保留该边界
@@ -199,23 +190,23 @@ if option == main:
 
 **实施步骤：**
 
-1. 先补红灯断言，要求实施入口的 skill 规则中出现宿主级禁行要求。
-2. 先补红灯断言，要求 bridge-service 实施入口文案包含“不是主会话内部派工选择”。
-3. 跑目标测试，确认当前版本至少有一项失败，且失败点对应本次 BUG。
-4. 实现 Task 01 和 Task 02。
-5. 修复后复跑目标测试，确认全部变绿。
+1. 改单测 helper：默认不再自动补 `implementation_executor_select(acp)`。
+2. 补红灯断言：`start(implementation + implementation_executor=acp)` 仍必须返回 `NEEDS_IMPLEMENTATION_EXECUTOR`。
+3. 补红灯断言：没有实施入口上下文时，直接 `implementation_executor_select(acp)` 必须失败或拒绝推进。
+4. 补文案与 skill 断言，继续锁住“不是主会话内部派工选择”“不得暴露 coder/子代理”。
+5. 实现 Task 01 和 Task 02。
+6. 修复后复跑目标测试，确认全部变绿。
 
 **伪代码：**
 
 ```text
-输入：当前仓库的 skill 文本 + bridge-service 返回
-新增断言 -> 用户未选择前不得越权推进
+输入：当前仓库的 skill 文本 + bridge-service 返回 + 单测 helper
+移除 helper 默认 acp
+新增断言 -> start 阶段不得提前吃 implementation_executor
+新增断言 -> implementation_executor_select 必须来自实施入口上下文
 新增断言 -> 实施入口不得暴露 coder/子代理
-运行目标测试
-if 当前版本全部通过:
-  说明红灯没抓住缺口，需要先修正断言
-修复规则与返回后重新运行
-输出：测试从红灯变绿，并锁住边界回归
+修复后重新运行
+输出：测试不再替生产代码掩盖错误默认值
 ```
 
 **自动化验证：**
@@ -229,11 +220,13 @@ if 当前版本全部通过:
 **对应交付场景：**
 
 - 同一条真实业务链路在自动化层提前锁住“未选前不得推进”
+- 自动化层不再默认帮生产代码选 ACP
 - 安装产物也必须保留相同边界，避免源码对了而真实入口又漂移
 
 **完成标准：**
 
 - 红灯测试能稳定抓住本次缺口。
+- helper 不再默认自动选 ACP。
 - 修复后目标测试全部通过。
 
 ### Task 04: 自动化验证、构建和真实交付测试闭环
@@ -314,12 +307,12 @@ if 回复 2 前出现模型确认:
 
 | 测试编号 | 覆盖失败 | 红灯表现 | 修复后绿灯标准 |
 |---|---|---|---|
-| UT-01 | 实施入口文案没有把“主会话内部派工选择”与“实施执行方选择”拆开 | `tests/unit/bridge-service-workflow.test.ts` 断言失败 | 首返与恢复态都包含明确边界提示 |
-| UT-02 | skill 未明确写出“用户未选择前不得调用 implementation_executor_select” | `tests/delivery/team-delegate-skill.delivery.test.ts` 断言失败 | skill 包含宿主级禁行规则 |
-| UT-03 | 安装产物未保留宿主级禁行规则 | `tests/plugin/install.plugin.test.ts` 断言失败 | 安装产物断言通过 |
-| UT-04 | 修复后影响既有实施执行方选择状态机测试 | 相关测试失败 | 既有状态机测试保持通过 |
-| UT-05 | 修复后构建失败 | `npm run build` 失败 | 构建通过 |
-| UT-06 | 修复后插件准备失败 | `npm run prepare:plugin` 失败 | 插件准备通过 |
+| UT-01 | `start` 阶段提前吃掉 `implementation_executor=acp`，跳过实施执行方选择 | `tests/unit/bridge-service-workflow.test.ts` 断言失败 | `start` 仍返回 `NEEDS_IMPLEMENTATION_EXECUTOR` |
+| UT-02 | 无实施入口上下文时，仍可直接 `implementation_executor_select(acp)` 推进 | `tests/unit/bridge-service-workflow.test.ts` 断言失败 | 脱离上下文时被拒绝推进 |
+| UT-03 | skill 未明确写出“用户未选择前不得调用 implementation_executor_select” | `tests/delivery/team-delegate-skill.delivery.test.ts` 断言失败 | skill 包含宿主级禁行规则 |
+| UT-04 | 安装产物未保留宿主级禁行规则 | `tests/plugin/install.plugin.test.ts` 断言失败 | 安装产物断言通过 |
+| UT-05 | 修复后影响既有实施执行方选择状态机测试或继续默认选 ACP 的 helper 假设 | 相关测试失败 | 既有状态机测试保持通过，helper 不再自动补 ACP |
+| UT-06 | 修复后构建或插件准备失败 | `npm run build` / `npm run prepare:plugin` 失败 | 构建通过，插件准备通过 |
 
 ## 5. 自动化验证计划
 

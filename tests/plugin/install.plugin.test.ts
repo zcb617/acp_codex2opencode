@@ -323,4 +323,16 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("只能在插件闭环结束后");
   });
 
+  it("should preserve the generic-confirmation boundary in installed skill", async () => {
+    const skill = await readFile(
+      join(root, "skills", "team-delegate", "SKILL.md"),
+      "utf8"
+    );
+
+    expect(skill).toContain("开始吧");
+    expect(skill).toContain("按这个点进入改动流程");
+    expect(skill).toContain("不能等价成“已经选择 ACP 实施”");
+    expect(skill).toContain("交给 ACP / 委派实施 / 走 ACP");
+  });
+
 });

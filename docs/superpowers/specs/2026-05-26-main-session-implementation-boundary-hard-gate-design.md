@@ -77,7 +77,12 @@
 
 ### 4.1 直接原因
 
-主会话编排层在收到 `NEEDS_IMPLEMENTATION_EXECUTOR` 后，没有把该节点当成必须等待用户输入的硬闸门，而是继续套用了仓库侧“开发任务优先安排 coder”这类内部实施策略。
+当前实现把“实施执行方选择”做成了半截硬闸门：
+
+1. 文案和返回结构已经要求用户先选“主会话 / ACP”
+2. 但 `start` 路径仍会读取传入的 `implementation_executor`
+3. 只要主会话在启动委派时提前带入 `implementation_executor=acp`，就会直接跳过 `NEEDS_IMPLEMENTATION_EXECUTOR`
+4. 后续直接进入 `NEEDS_MODEL_CONFIRM / NEEDS_MODEL_SELECTION`
 
 于是出现了两层语义混层：
 
@@ -88,10 +93,10 @@
 
 ### 4.2 深层原因
 
-当前仓库已经把“实施执行方选择”写进了插件返回和 skill 规则，但还缺一层更硬的“宿主编排禁行规则”：
+当前仓库已经把“实施执行方选择”写进了插件返回和 skill 规则，但代码层还有两条旁路：
 
-1. `NEEDS_IMPLEMENTATION_EXECUTOR` 目前对插件状态机是业务节点，对主会话更多还是文案约束
-2. 没有额外机制显式约束“用户未回复前，不得调用 `implementation_executor_select`”
+1. `start` 阶段没有屏蔽 `implementation_executor`，导致主会话可以在错误阶段提前提交实施执行方
+2. `implementation_executor_select` 在“无活动 workflow”分支里，只要拿到 `start_phase=implementation` 和 `implementation_executor=acp` 就可以继续推进，没有证明“用户已经经过实施执行方选择节点”
 3. 没有额外机制显式区分“插件业务分流”和“主会话内部派工”
 4. 当主会话同时受仓库协作规则影响时，容易优先执行“内部派工偏好”，压过插件业务节点
 
@@ -106,25 +111,29 @@
 
 但没有覆盖：
 
-1. 主会话在收到 `NEEDS_IMPLEMENTATION_EXECUTOR` 后，必须停住等待用户输入，不能直接继续调用 `implementation_executor_select`
-2. 主会话不得把仓库协作规则里的“优先派 coder”提前套进该业务节点
-3. 主会话越权推进时，真实宿主链路能否被自动化或真实交付测试捕获
+1. `start` 阶段即使收到 `implementation_executor=acp`，也必须继续停在 `NEEDS_IMPLEMENTATION_EXECUTOR`
+2. `implementation_executor_select` 不能仅凭调用方传入的 `implementation_executor` 和 `start_phase=implementation` 就继续推进
+3. 单测 helper 当前默认会在实施入口自动补一次 `implementation_executor_select(acp)`，这会掩盖真实缺口
+4. 主会话不得把仓库协作规则里的“优先派 coder”提前套进该业务节点
+5. 主会话越权推进时，真实宿主链路能否被自动化或真实交付测试捕获
 
 ### 4.4 证据链
 
 1. 真实回放中，`delegate.task.execute(action=start)` 的返回已经是 `NEEDS_IMPLEMENTATION_EXECUTOR`
 2. 该返回里已有“请直接回复 `1` 或 `2`”和 `implementation_executor_select` 的两项正式业务选项
-3. 用户没有回复 `1/2`
-4. 主会话却输出“走委派 coder”，随后直接调用 `implementation_executor_select(acp)`
+3. 真实失败案例中，主会话把“开始吧”错误理解成“继续按 ACP 实施”，并在启动委派时提前带入 `implementation_executor=acp`
+4. `start` 代码路径会读取该字段，只要阶段是 `implementation` 就直接绕过 `NEEDS_IMPLEMENTATION_EXECUTOR`
 5. 插件后续立即进入 `NEEDS_MODEL_CONFIRM`
-6. 因此本次问题的责任不在插件状态机，而在主会话编排层越权代选
+6. 因此本次问题不只是文案缺硬闸门，而是 `start` 和 `implementation_executor_select` 入口都没有做阶段隔离
 
 ## 5. 修复目标与非目标
 
 ### 5.1 修复目标
 
 - `NEEDS_IMPLEMENTATION_EXECUTOR` 必须成为对主会话也生效的硬闸门
+- `start` 阶段必须完全屏蔽 `implementation_executor`，不能允许调用方在启动时提前指定 `main/acp`
 - 用户未明确回复 `1/2` 前，主会话不得调用 `implementation_executor_select`
+- `implementation_executor_select` 必须只能发生在插件已经先返回过“实施执行方选择”之后，不能靠外部直接拼参数推进
 - 主会话不得把 `coder/子代理/opencode/模型选择` 等内部实现语言暴露为该节点的用户业务选项
 - 用户选择 `main` 后，插件闭环结束；主会话内部是否再派 coder，只能发生在插件闭环结束之后
 - 自动化验证和真实交付测试都要锁住这条“主会话不得越权代选”的边界
@@ -151,6 +160,8 @@
 
 1. `NEEDS_IMPLEMENTATION_EXECUTOR` 不仅是插件状态机节点，还要成为主会话编排层的停步节点
 2. 主会话只有在收到用户明确的 `1/2` 后，才允许调用 `implementation_executor_select`
+3. `start` 不再接受 `implementation_executor` 作为实施阶段的隐式快捷入口
+4. `implementation_executor_select` 必须绑定到插件已发出的“实施执行方选择”上下文，不能脱离该上下文单独推进
 
 ### 6.2 用户可见行为变化
 
@@ -172,12 +183,14 @@
 
 ### 6.3 数据结构或接口变化
 
-本次不改变 `implementation_executor_select` 的输入协议，也不新增新的 MCP 动作。
+本次不新增新的 MCP 动作，但要加强实施执行方选择的上下文约束。
 
 本次数据层变化聚焦两点：
 
-1. 强化 `NEEDS_IMPLEMENTATION_EXECUTOR` 返回的结构化边界提示，让主会话更难误读
-2. 在主会话对插件返回结果的编排规则中，新增“宿主禁行规则”测试护栏
+1. `start` 阶段对 `implementation_executor` 做显式忽略或显式拒绝，避免跨阶段参数污染
+2. 为 `implementation_executor_select` 增加“必须来自已缓存实施执行方选择上下文”的校验
+3. 强化 `NEEDS_IMPLEMENTATION_EXECUTOR` 返回的结构化边界提示，让主会话更难误读
+4. 在主会话对插件返回结果的编排规则中，新增“宿主禁行规则”测试护栏
 
 ### 6.4 错误处理变化
 
@@ -210,8 +223,9 @@
 ## 7. 修改范围
 
 - `src/session/bridge-service.ts`：强化实施入口的结构化边界提示
+- `src/session/bridge-service.ts`：切断 `start` 阶段的 `implementation_executor` 旁路，并给 `implementation_executor_select` 加上下文校验
 - `skills/team-delegate/SKILL.md`：补“主会话不得越权代选”的宿主级硬约束
-- `tests/unit/bridge-service-workflow.test.ts`：补实施入口边界断言
+- `tests/unit/bridge-service-workflow.test.ts`：补实施入口边界断言，并移除默认自动选择 ACP 的 helper 假设
 - `tests/delivery/team-delegate-skill.delivery.test.ts`：补 skill 文本对宿主禁行规则的断言
 - `tests/plugin/install.plugin.test.ts`：补安装产物断言，确保 skill 规则被打包带出
 - `docs/superpowers/specs/2026-05-26-main-session-implementation-boundary-hard-gate-design.md`：本次设计文档

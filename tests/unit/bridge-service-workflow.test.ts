@@ -128,9 +128,16 @@ function mockBridgeService(options?: {
   hacked.readWorkspacePreferredModel = vi.fn(async () => "llm-router-openai-compatible/kimi-for-roo");
   hacked.saveWorkspacePreferredModel = vi.fn(async () => undefined);
   hacked.cachePendingStartInput = vi.fn(
-    async (workflowKey: string, input: Record<string, unknown>, sessionAlias: string, taskId: string) => {
+    async (
+      workflowKey: string,
+      input: Record<string, unknown>,
+      sessionAlias: string,
+      taskId: string,
+      pendingGate?: string
+    ) => {
       pendingStartByKey.set(workflowKey, {
         ...input,
+        _pending_gate: pendingGate,
         session_alias: sessionAlias,
         task_id: taskId,
         action: "start"
@@ -140,6 +147,7 @@ function mockBridgeService(options?: {
   hacked.clearPendingStartInput = vi.fn(async (workflowKey: string) => {
     pendingStartByKey.delete(workflowKey);
   });
+  hacked.loadPendingStartInput = vi.fn(async (workflowKey: string) => pendingStartByKey.get(workflowKey));
   hacked.resolveEffectiveStartInput = vi.fn(async (workflowKey: string, input: Record<string, unknown>) => {
     return (pendingStartByKey.get(workflowKey) as Record<string, unknown> | undefined) ?? input;
   });
@@ -175,9 +183,16 @@ function mockBridgeServiceWithRuntimeDefaults(): BridgeService {
     workflow.activeAgentMode = mode;
   });
   hacked.cachePendingStartInput = vi.fn(
-    async (workflowKey: string, input: Record<string, unknown>, sessionAlias: string, taskId: string) => {
+    async (
+      workflowKey: string,
+      input: Record<string, unknown>,
+      sessionAlias: string,
+      taskId: string,
+      pendingGate?: string
+    ) => {
       pendingStartByKey.set(workflowKey, {
         ...input,
+        _pending_gate: pendingGate,
         session_alias: sessionAlias,
         task_id: taskId,
         action: "start"
@@ -187,6 +202,7 @@ function mockBridgeServiceWithRuntimeDefaults(): BridgeService {
   hacked.clearPendingStartInput = vi.fn(async (workflowKey: string) => {
     pendingStartByKey.delete(workflowKey);
   });
+  hacked.loadPendingStartInput = vi.fn(async (workflowKey: string) => pendingStartByKey.get(workflowKey));
   hacked.resolveEffectiveStartInput = vi.fn(async (workflowKey: string, input: Record<string, unknown>) => {
     return (pendingStartByKey.get(workflowKey) as Record<string, unknown> | undefined) ?? input;
   });
@@ -216,13 +232,14 @@ async function startAndConfirmModel(
   expect(start.success).toBe(true);
   if (
     input.start_phase === "implementation" &&
-    (start.data as { workflow_status?: string }).workflow_status === "NEEDS_IMPLEMENTATION_EXECUTOR"
+    (start.data as { workflow_status?: string }).workflow_status === "NEEDS_IMPLEMENTATION_EXECUTOR" &&
+    input.implementation_executor
   ) {
     start = await service.executeTask({
       development_type: "feature",
       ...input,
       action: "implementation_executor_select",
-      implementation_executor: input.implementation_executor ?? "acp"
+      implementation_executor: input.implementation_executor
     } as Parameters<BridgeService["executeTask"]>[0]);
     expect(start.success).toBe(true);
   }
@@ -576,6 +593,72 @@ describe("bridge workflow approvals", () => {
     expect((start.data as { user_message: string }).user_message).toContain("请直接回复 `1` 或 `2`");
     expect((start.data as { next_business_action: string }).next_business_action).toContain("直接回复 `1` 或 `2`");
     expect((start.data as { user_message: string }).user_message).not.toContain("workflow_status");
+  });
+
+  it("should ignore a prefilled ACP executor on start and still require explicit implementation choice", async () => {
+    const service = mockBridgeService();
+
+    const start = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: `方案：\n${DESIGN_SECTIONS_TEXT}\n\n计划：\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-implementation-ignore-prefill",
+      action: "start",
+      start_phase: "implementation",
+      start_phase_reason: "用户确认可以进入实施，但还没有选择执行方。",
+      implementation_executor: "acp",
+      development_type: "feature"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_IMPLEMENTATION_EXECUTOR");
+    expect((start.data as { user_message: string }).user_message).toContain("请直接回复 `1` 或 `2`");
+    expect((start.data as { workflow_status: string }).workflow_status).not.toBe("NEEDS_MODEL_CONFIRM");
+  });
+
+  it("should reject implementation executor submission before entering the implementation choice gate", async () => {
+    const service = mockBridgeService();
+
+    const invalid = await service.executeTask({
+      workspace_path: "D:/repo",
+      requirement_text: `方案：\n${DESIGN_SECTIONS_TEXT}\n\n计划：\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-implementation-direct-select",
+      action: "implementation_executor_select",
+      implementation_executor: "acp",
+      start_phase: "implementation",
+      development_type: "feature"
+    } as Parameters<BridgeService["executeTask"]>[0]);
+
+    expect(invalid.success).toBe(false);
+    expect(invalid.error?.code).toBe(ErrorCodes.WORKFLOW_INVALID_TRANSITION);
+    expect(invalid.error?.message).toContain("当前还没有进入实施执行方选择");
+  });
+
+  it("should reject model confirmation before the user explicitly chooses ACP for implementation", async () => {
+    const service = mockBridgeService();
+    const input = {
+      workspace_path: "D:/repo",
+      requirement_text: `方案：\n${DESIGN_SECTIONS_TEXT}\n\n计划：\n${PLANNING_SECTIONS_TEXT}`,
+      session_alias: "task-implementation-direct-model",
+      start_phase: "implementation" as const,
+      development_type: "feature" as const
+    };
+
+    const start = await service.executeTask({
+      ...input,
+      action: "start"
+    });
+    expect(start.success).toBe(true);
+    expect((start.data as { workflow_status: string }).workflow_status).toBe("NEEDS_IMPLEMENTATION_EXECUTOR");
+
+    const invalidConfirm = await service.executeTask({
+      ...input,
+      action: "model_confirm",
+      model_confirm_choice: "use_saved_model"
+    });
+
+    expect(invalidConfirm.success).toBe(false);
+    expect(invalidConfirm.error?.code).toBe(ErrorCodes.WORKFLOW_INVALID_TRANSITION);
+    expect(invalidConfirm.error?.message).toContain("当前还没有进入 ACP 模型确认阶段");
   });
 
   it("should block implementation start when referenced plan document fails strict gate", async () => {
@@ -1969,6 +2052,7 @@ describe("bridge workflow approvals", () => {
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-development-type-restore",
       start_phase: "implementation",
+      implementation_executor: "acp",
       development_type: "bugfix"
     });
     await service.shutdown();
@@ -2018,7 +2102,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-007",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
     expect(start.success).toBe(true);
     expect((start.data as { detected_start_phase: string }).detected_start_phase).toBe("implementation");
@@ -2063,7 +2148,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-delivery-pass",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
 
     const passed = await service.executeTask({
@@ -2085,7 +2171,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-delivery-fail",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
 
     const failed = await service.executeTask({
@@ -2113,7 +2200,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-remediation-return",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
 
     await service.executeTask({
@@ -2168,7 +2256,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-remediation-session-restore",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
 
     await service.executeTask({
@@ -2221,7 +2310,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-remediation-session-fail",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
 
     await service.executeTask({
@@ -2271,7 +2361,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-id-addressable-alias",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
 
     const status = await service.executeTask({
@@ -2294,7 +2385,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "old-expired-task",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
 
     const store = (service as unknown as {
@@ -2356,7 +2448,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-remediation-limit",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
 
     const firstFailure = await service.executeTask({
@@ -2417,7 +2510,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-remediation-cancel",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
 
     await service.executeTask({
@@ -2465,7 +2559,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-remediation-restore",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
 
     await service.executeTask({
@@ -2518,7 +2613,8 @@ describe("bridge workflow approvals", () => {
       workspace_path: "D:/repo",
       requirement_text: `设计章节:\n${DESIGN_SECTIONS_TEXT}\n\n计划章节:\n${PLANNING_SECTIONS_TEXT}`,
       session_alias: "task-start-restore",
-      start_phase: "implementation"
+      start_phase: "implementation",
+      implementation_executor: "acp"
     });
     await service.shutdown();
 
