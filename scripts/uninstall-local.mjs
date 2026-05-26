@@ -80,13 +80,16 @@ async function main() {
   const codexSkillRoot = path.join(os.homedir(), ".codex", "skills");
   const pluginRef = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
 
-  console.log("[A/5] 禁用并移除 marketplace 注册...");
+  console.log("[A/6] 移除已安装插件实例...");
+  runIgnoreError("codex", ["plugin", "remove", pluginRef], projectRoot);
+
+  console.log("[B/6] 禁用并移除 marketplace 注册...");
   runIgnoreError("codex", ["plugin", "marketplace", "remove", MARKETPLACE_NAME], projectRoot);
 
-  console.log("[B/5] 清理本地 marketplace 目录...");
+  console.log("[C/6] 清理本地 marketplace 目录...");
   await rm(marketplaceRoot, { recursive: true, force: true });
 
-  console.log("[C/5] 清理 Codex 配置中的插件启用节...");
+  console.log("[D/6] 清理 Codex 配置中的插件启用节...");
   await mkdir(path.dirname(codexConfigPath), { recursive: true });
   let currentConfig = "";
   try {
@@ -102,13 +105,13 @@ async function main() {
     await writeFile(codexConfigPath, updatedConfig, "utf8");
   }
 
-  console.log("[D/5] 清理当前插件 cache 与全局技能...");
+  console.log("[E/6] 清理当前插件 cache 与全局技能...");
   await rm(pluginCacheRoot, { recursive: true, force: true });
   for (const skillName of SKILL_NAMES) {
     await rm(path.join(codexSkillRoot, skillName), { recursive: true, force: true });
   }
 
-  console.log("[E/5] 完成。请重启 Codex。");
+  console.log("[F/6] 完成。请重启 Codex。");
   console.log("UNINSTALL-COMPLETED");
 }
 

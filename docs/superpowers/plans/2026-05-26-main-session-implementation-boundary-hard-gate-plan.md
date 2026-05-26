@@ -445,12 +445,12 @@ npm run prepare:plugin
 
 当前记录状态：
 
-- 失败场景：尚未执行本次真实交付测试，待记录
-- 输入数据：尚未执行本次真实交付测试，待记录
+- 失败场景：默认 `codex` CLI 真实入口复测前，`npm run plugin:install-local` 输出成功，但插件实际仍处于 `not installed`
+- 输入数据：在当前仓库执行 `npm run plugin:install-local`，随后执行默认 `codex plugin list`
 - 期望结果：未回复 `1/2` 前停在实施执行方选择；回复 `1` 后转主会话；回复 `2` 后才进 ACP
-- 实际结果：尚未执行本次真实交付测试，待记录
-- 根因分析：当前已确认历史失败来自主会话越权代选 ACP
-- 修复方案：按本计划补宿主级硬闸门、结构化边界提示与回归护栏
+- 实际结果：安装脚本打印 `INSTALLATION-COMPLETED`，但 `codex plugin list` 仍显示 `acp-codex2opencode@acp-local not installed`；必须手动执行 `codex plugin add acp-codex2opencode@acp-local` 后才恢复正常
+- 根因分析：当前已确认“实施执行方选择”历史失败来自主会话越权代选 ACP；本轮新增失败来自安装脚本未真正执行插件安装
+- 修复方案：在保留宿主级硬闸门与结构化边界提示的基础上，补齐 `plugin:install-local` 的真实安装动作与安装后校验，并让卸载链路对称移除已安装实例
 - 复测命令：完成代码修改后执行第 5 节命令与第 6 节真实业务交付测试
 - 复测结果：待执行
 
@@ -466,7 +466,7 @@ npm run prepare:plugin
 ## 9. 上下文恢复说明
 
 - 当前已确认：插件状态机和已安装 skill 都会返回“实施执行方选择”，问题发生在主会话编排层越权代选
-- 当前修复策略：不改状态机迁移，只补对主会话生效的硬闸门与自动化/交付护栏
-- 当前进度：设计文档与计划文档已完成，实施门禁已确认计划章节要求，下一步进入代码修改
-- 恢复入口：回到本计划的 Task 01 开始实施，完成后依次执行 Task 02、Task 03、Task 04
-- 下一步：按本计划先补红灯测试，再改 skill 和 bridge-service，最后跑真实业务链验证
+- 当前修复策略：状态机迁移保持不变；先补主会话越权硬闸门，再补默认 `codex` CLI 安装链缺失的真实安装动作与校验
+- 当前进度：业务边界修复已完成，默认 CLI 真实复测已确认边界生效；当前卡点转为 `plugin:install-local` 未真正安装插件
+- 恢复入口：优先回到 Task 04 的安装与真实 CLI 交付验证闭环，先修安装脚本，再重跑自动化验证和默认 `codex` 真实入口
+- 下一步：补安装链红灯断言，修 `scripts/install-local.mjs` / `scripts/uninstall-local.mjs`，然后重新执行默认 `codex exec` 交付测试

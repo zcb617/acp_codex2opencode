@@ -266,3 +266,24 @@
   3. 补红灯测试
   4. 实施整改
   5. 重新执行自动化验证与同一条真实业务链路
+
+### 9.1 本轮真实交付测试新增失败事实
+
+- 失败阶段：
+  1. 已完成默认 `codex` CLI 真实入口复测
+  2. 已确认“实施执行方选择”业务边界修复生效
+  3. 但在进入真实 CLI 复测前，`npm run plugin:install-local` 暴露出新的安装产物漏口
+- 失败现象：
+  1. 安装脚本输出 `INSTALLATION-COMPLETED`
+  2. 但默认 `codex plugin list` 仍显示 `acp-codex2opencode@acp-local not installed`
+  3. 直到手动执行 `codex plugin add acp-codex2opencode@acp-local` 后，插件才变为 `installed, enabled`
+- 业务影响：
+  1. 用户按 runbook 执行 `npm run plugin:install-local` 后，会误以为插件已经安装完成
+  2. 真实默认 CLI 入口可能直接报“插件未安装”，导致后续团队委派流程无法按正常入口启动
+- 根因判断：
+  1. 当前安装脚本只完成 marketplace 注册、配置写入和技能复制
+  2. 但没有真正执行 `codex plugin add` 完成本地插件安装
+- 本轮追加整改目标：
+  1. `npm run plugin:install-local` 必须单独完成“注册 marketplace + 真正安装插件 + 启用配置 + 技能安装”
+  2. 安装脚本本身要补安装后校验，确保 `codex plugin list` 结果为 `installed, enabled`
+  3. 卸载脚本要与真实安装行为对称，避免旧安装状态残留影响重装复测

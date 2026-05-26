@@ -55,13 +55,15 @@ npm run plugin:install-local
 2. 默认轮次超时 `ACP_BRIDGE_TURN_TIMEOUT_MS=86400000`（24 小时）
 3. 同步等待窗口 `ACP_BRIDGE_WORKFLOW_SYNC_WAIT_MS=180000`（首次同步等待 3 分钟）
 
+脚本完成后，`codex plugin list` 必须已经显示 `acp-codex2opencode@acp-local installed, enabled`。如果没有达到这个状态，本次安装视为失败，不能只看 `INSTALLATION-COMPLETED`。
+
 ### F. 重启 Codex
 
 关闭并重新打开 Codex（Desktop 或 CLI 均可）。
 
 ### G. 验证安装完成
 
-1. 插件列表可见并启用 `acp-codex2opencode`（显示名 `ACP Delegate Bridge`）。
+1. 执行 `codex plugin list`，确认 `acp-codex2opencode@acp-local` 显示为 `installed, enabled`。
 2. 技能文件存在：
    - `~/.codex/skills/team-delegate/SKILL.md`
    - `~/.codex/skills/ian-think/SKILL.md`
@@ -86,7 +88,9 @@ npm run plugin:install-local
 
 ### H. 真实 Codex CLI 交付验证入口
 
-1. 打开真实 Codex CLI，并确认当前会话已经加载刚安装的插件。
+1. 使用默认方式正常启动真实 Codex CLI，并确认当前会话已经加载刚安装的插件。
+   - 不使用额外 profile
+   - 不使用临时 `-c` 配置覆盖
 2. 使用真实业务语言发起团队委派，例如：
 
 ```text

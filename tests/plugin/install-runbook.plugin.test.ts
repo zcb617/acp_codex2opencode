@@ -19,6 +19,8 @@ describe("PT-00 install runbook contract", () => {
     expect(runbook).toContain("ian-think");
     expect(runbook).toContain("~/.codex/skills/team-delegate/docs/");
     expect(runbook).toContain("~/.codex/skills/ian-think/SKILL.md");
+    expect(runbook).toContain("codex plugin list");
+    expect(runbook).toContain("installed, enabled");
     expect(runbook).toContain("~/.codex/plugins/cache/acp-local/acp-codex2opencode/");
     expect(runbook).toContain("重装后如果需要验证 plugin cache 是否已刷新");
     expect(runbook).toContain("计划确认后必须先选择实施执行方");
@@ -36,6 +38,9 @@ describe("PT-00 install runbook contract", () => {
     expect(runbook).toContain("status=ACTIVE");
     expect(runbook).toContain("当前环境无法建立真实自动跟进");
     expect(runbook).toContain("手动重复触发 `status`");
+    expect(runbook).toContain("默认方式正常启动真实 Codex CLI");
+    expect(runbook).toContain("不使用额外 profile");
+    expect(runbook).toContain("不使用临时 `-c` 配置覆盖");
     expect(runbook).toContain("docs/团队委派交付测试必过表.md");
     expect(runbook).not.toContain("npm run skill:install-local");
   });
