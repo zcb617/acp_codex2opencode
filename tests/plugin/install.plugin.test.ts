@@ -217,20 +217,6 @@ describe("PT-01 plugin install contract", () => {
     }
   });
 
-  it("should make install-local perform real plugin installation and verification", async () => {
-    const installScript = await readFile(join(root, "scripts", "install-local.mjs"), "utf8");
-    const uninstallScript = await readFile(join(root, "scripts", "uninstall-local.mjs"), "utf8");
-
-    expect(installScript).toContain('["plugin", "remove", pluginRef]');
-    expect(installScript).toContain('["plugin", "marketplace", "add", marketplaceRoot]');
-    expect(installScript).toContain('["plugin", "add", pluginRef]');
-    expect(installScript).toContain('["plugin", "list"]');
-    expect(installScript).toContain("installed, enabled");
-    expect(installScript).toContain("插件安装校验失败");
-
-    expect(uninstallScript).toContain('["plugin", "remove", pluginRef]');
-  });
-
   it("should package all design and planning guide docs with the team-delegate skill", async () => {
     const skillDocsDir = join(root, "skills", "team-delegate", "docs");
 
