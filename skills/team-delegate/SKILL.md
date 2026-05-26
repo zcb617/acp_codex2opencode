@@ -165,10 +165,11 @@ digraph team_delegate_flow {
    - `2` ACP 委派实施
 3. 必须先停住等待用户选择实施执行方；禁止静默按默认 1 继续，禁止把默认值当成用户已经选择。
 4. 必须要求用户直接回复 `1` 或 `2`。如果用户没有明确选择，就继续停在这个节点，不得自行代替用户决定。
-5. 如果用户选择主会话继续实施，调用 `implementation_executor_select` 且传 `implementation_executor=main`；插件闭环在此结束，后续编码、自动化测试、真实交付测试和失败修复全部由主会话负责。
-6. 如果用户选择 ACP 委派实施，调用 `implementation_executor_select` 且传 `implementation_executor=acp`；之后才继续模型确认/选择与 ACP 实施闭环。
-7. 在用户选择前，禁止在这个节点跳过用户选择直接进入 `model_confirm`、`model_select` 或 `RUNNING_IMPLEMENTATION`。
-8. **硬性边界：该节点面向用户只能使用插件定义的业务选项（主会话继续实施 / ACP 委派实施）。禁止把 `coder`、`子代理`、`直接改代码`、`opencode`、`模型选择` 等内部实现语言暴露成此节点的用户选项。这是实施执行方选择，不是主会话内部派工选择；主会话内部是否再派 coder，只能在插件闭环结束后由主会话自行决定，不属于插件业务流程。**
+5. **宿主级硬性边界——主会话不得越权代选：未收到用户明确回复 `1` 或 `2` 前，主会话不得调用 `implementation_executor_select`。这是一条硬闸门，不是文案建议。在用户未明确选择前，主会话只允许解释当前业务阶段、说明选择影响和等待用户回复；不允许代替用户提交任何动作。**
+6. 如果用户选择主会话继续实施，调用 `implementation_executor_select` 且传 `implementation_executor=main`；插件闭环在此结束，后续编码、自动化测试、真实交付测试和失败修复全部由主会话负责。
+7. 如果用户选择 ACP 委派实施，调用 `implementation_executor_select` 且传 `implementation_executor=acp`；之后才继续模型确认/选择与 ACP 实施闭环。
+8. 在用户选择前，禁止在这个节点跳过用户选择直接进入 `model_confirm`、`model_select` 或 `RUNNING_IMPLEMENTATION`。
+9. **硬性边界：该节点面向用户只能使用插件定义的业务选项（主会话继续实施 / ACP 委派实施）。禁止把 `coder`、`子代理`、`直接改代码`、`opencode`、`模型选择` 等内部实现语言暴露成此节点的用户选项。这是实施执行方选择，不是主会话内部派工选择；主会话内部是否再派 coder，只能在插件闭环结束后由主会话自行决定，不属于插件业务流程。**
 
 ### 2) `NEEDS_USER_INPUT`
 

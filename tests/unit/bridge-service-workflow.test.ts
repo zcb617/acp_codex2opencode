@@ -2877,6 +2877,13 @@ describe("bridge workflow approvals", () => {
       expect(opt.description).not.toContain("opencode");
       expect(opt.description).not.toContain("模型选择");
     }
+
+    const boundaryHint = (start.data as { boundary_hint?: string }).boundary_hint;
+    expect(boundaryHint).toBeDefined();
+    expect(boundaryHint).toContain("不是主会话内部派工选择");
+    expect(boundaryHint).toContain("未收到用户明确");
+    expect(boundaryHint).toContain("不得调用 implementation_executor_select");
+    expect(boundaryHint).toContain("硬性边界");
   });
 
   it('UT-06: skill doc should mention summary usage for concise progress reporting', async () => {

@@ -2660,6 +2660,8 @@ export class BridgeService {
       next_business_action: "当前是实施执行方选择，不是主会话内部派工选择。请选择由主会话继续实施，或交给 ACP 进入实施闭环；请直接回复 `1` 或 `2`",
       user_message:
         "当前阶段：实施执行方选择。进入原因：方案和计划都已确认，可以进入实施。这是实施执行方选择，不是主会话内部派工选择。你现在要做的选择：1）主会话继续实施；2）交给 ACP 实施。选择影响：选主会话后，后续编码、自动化测试和交付测试都由主会话负责；选 ACP 后，进入 ACP 实施闭环。请直接回复 `1` 或 `2`；在收到明确选择前，当前节点不会继续推进。",
+      boundary_hint:
+        "硬性边界：这是实施执行方选择，不是主会话内部派工选择。未收到用户明确回复 `1` 或 `2` 前，主会话不得调用 implementation_executor_select。用户选主会话后插件闭环结束，内部是否再派 coder 只能在插件闭环结束后由主会话自行决定。",
       next_action_required: ["implementation_executor_select"],
       default_option: "1",
       user_options: [
@@ -5520,6 +5522,8 @@ export class BridgeService {
         business_stage: "实施执行方选择",
         user_message:
           "当前方案和计划已经确认。这是实施执行方选择，不是主会话内部派工选择。下一步需要确定由谁进入实施阶段：你可以选择继续由主会话实施，或交给 ACP 进入委派实施闭环。请直接回复 `1` 或 `2`。",
+        boundary_hint:
+          "硬性边界：这是实施执行方选择，不是主会话内部派工选择。未收到用户明确回复 `1` 或 `2` 前，主会话不得调用 implementation_executor_select。用户选主会话后插件闭环结束，内部是否再派 coder 只能在插件闭环结束后由主会话自行决定。",
         next_business_action: "选择实施执行方，并直接回复 `1` 或 `2`",
         next_action_required: ["implementation_executor_select"],
         default_option: "1",

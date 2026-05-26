@@ -308,4 +308,19 @@ describe("PT-01 plugin install contract", () => {
     expect(skill).toContain("内部实现语言");
   });
 
+  it("should enforce host-level hard gate in installed skill", async () => {
+    const skill = await readFile(
+      join(root, "skills", "team-delegate", "SKILL.md"),
+      "utf8"
+    );
+
+    expect(skill).toContain("未收到用户明确");
+    expect(skill).toContain("不得调用 `implementation_executor_select`");
+    expect(skill).toContain("主会话不得越权代选");
+    expect(skill).toContain("硬性边界");
+    expect(skill).toContain("插件闭环结束");
+    expect(skill).toContain("内部是否再派 coder");
+    expect(skill).toContain("只能在插件闭环结束后");
+  });
+
 });
