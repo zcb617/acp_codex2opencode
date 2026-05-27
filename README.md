@@ -57,7 +57,7 @@
 - npm
 - Codex CLI（可执行 `codex --version`）
 
-### 三步安装
+### Codex 安装
 
 ```bash
 npm run plugin:install-local
@@ -72,10 +72,34 @@ npm run plugin:install-local
 3. 安装 `team-delegate` 与 `ian-think` 到 `~/.codex/skills/`。
 4. 注入 `[mcp_servers.acp_codex2opencode_plugin]` 兜底配置。
 
+### Claude Code 安装
+
+```bash
+npm run plugin:install-claude
+```
+
+看到 `CLAUDE-INSTALLATION-COMPLETED` 后，重启 Claude Code。
+
+安装脚本会自动完成以下动作：
+
+1. 构建插件并安装到 `~/.claude/plugins/cache/`。
+2. 注册插件到 `~/.claude/plugins/installed_plugins.json`。
+3. 启用插件并写入 `~/.claude/settings.json`。
+4. 安装 `team-delegate` 与 `ian-think` 到 `~/.claude/skills/`。
+5. 注册 MCP 服务器配置。
+
 ### 卸载
+
+**Codex：**
 
 ```bash
 npm run plugin:uninstall-local
+```
+
+**Claude Code：**
+
+```bash
+npm run plugin:uninstall-claude
 ```
 
 ## 使用方式
@@ -162,13 +186,16 @@ RUN_REAL_ACP=1 npm run test:integration -- tests/integration/real-acp.integratio
 
 ```text
 .
-├── .codex-plugin/            # 插件清单
+├── .codex-plugin/            # Codex 插件清单
+├── .claude-plugin/           # Claude Code 插件清单
 ├── docs/                     # 项目文档与交付规范
 ├── skills/                   # 随插件分发的技能
 ├── scripts/                  # 安装/卸载/打包脚本
 ├── src/                      # TypeScript 源码
 ├── tests/                    # 自动化测试
-└── dist/                     # 构建产物
+├── dist/                     # 构建产物
+├── .mcp.json                 # Codex MCP 配置
+└── mcp-servers.json          # Claude Code MCP 配置
 ```
 
 ## 文档导航

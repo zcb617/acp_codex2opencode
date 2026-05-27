@@ -1,0 +1,21 @@
+{
+  "name": "acp-codex2opencode",
+  "owner": {
+    "name": "zhangchenbin",
+    "email": "zhangchenbin@0573zzz.com"
+  },
+  "metadata": {
+    "description": "ACP delegation bridge plugins for Claude Code - OpenCode ACP closed-loop delegation workflows",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "acp-codex2opencode",
+      "source": "./plugins/acp-codex2opencode",
+      "description": "OpenCode ACP delegated closed-loop execution for Claude Code",
+      "version": "0.2.0",
+      "keywords": ["acp", "delegation", "mcp", "team-delegate", "workflow"],
+      "strict": false
+    }
+  ]
+}
