@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { access, constants, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, constants, cp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,13 +82,13 @@ async function main() {
 
   console.log("[C/8] 安装插件到 Claude Code cache...");
   await rm(cacheDir, { recursive: true, force: true });
-  await mkdir(cacheDir, { recursive: true });
-
-  await cp(path.join(projectRoot, "dist"), path.join(cacheDir, "dist"), { recursive: true });
-  await cp(path.join(projectRoot, ".claude-plugin"), path.join(cacheDir, ".claude-plugin"), { recursive: true });
-  await cp(path.join(projectRoot, "mcp-servers.json"), path.join(cacheDir, "mcp-servers.json"));
-  await cp(path.join(projectRoot, "package.json"), path.join(cacheDir, "package.json"));
-  await cp(path.join(projectRoot, "skills"), path.join(cacheDir, "skills"), { recursive: true });
+  const cacheParentDir = path.dirname(cacheDir);
+  await mkdir(cacheParentDir, { recursive: true });
+  await symlink(
+    projectRoot,
+    cacheDir,
+    process.platform === "win32" ? "junction" : "dir"
+  );
 
   console.log("[D/8] 注册插件到 installed_plugins.json...");
   let installed = { version: 2, plugins: {} };
