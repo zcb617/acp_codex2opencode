@@ -55,7 +55,9 @@
 
 - Node.js >= 20
 - npm
-- Codex CLI（可执行 `codex --version`）
+- Codex CLI（可执行 `codex --version`）或 Claude Code CLI（可执行 `claude --version`）
+
+> **注意**：Claude Code 安装需要 `claude` 命令在 PATH 中可用。如果尚未安装，请先前往 [Claude Code 官网](https://claude.ai/code) 安装。
 
 ### Codex 安装
 
@@ -74,11 +76,19 @@ npm run plugin:install-local
 
 ### Claude Code 安装
 
+安装前请确认 Claude Code 已可用：
+
+```bash
+claude --version
+```
+
+然后执行安装：
+
 ```bash
 npm run plugin:install-claude
 ```
 
-看到 `CLAUDE-INSTALLATION-COMPLETED` 后，重启 Claude Code。
+看到 `CLAUDE-INSTALLATION-COMPLETED` 后，**重启 Claude Code**。
 
 安装脚本会自动完成以下动作：
 
@@ -87,6 +97,8 @@ npm run plugin:install-claude
 3. 启用插件并写入 `~/.claude/settings.json`。
 4. 安装 `team-delegate` 与 `ian-think` 到 `~/.claude/skills/`。
 5. 注册 MCP 服务器配置。
+
+**Claude Code 版本要求**：建议 `claude >= 0.2.x`，以确保 MCP 工具和技能系统兼容。如果安装后发现工具未加载，请尝试升级 Claude Code 到最新版本。
 
 ### 卸载
 
@@ -102,13 +114,45 @@ npm run plugin:uninstall-local
 npm run plugin:uninstall-claude
 ```
 
+### 安装验证
+
+**Codex：**
+
+重启后执行以下命令确认插件和工具已加载：
+
+```bash
+codex tool list | findstr delegate
+```
+
+应看到 `delegate.task.execute` 等工具。
+
+**Claude Code：**
+
+重启后在对话中输入 `/tools`，在列表中查找以 `delegate.` 开头的工具。若未出现，请检查：
+
+1. `~/.claude/settings.json` 中 `enabledPlugins` 是否包含 `acp-codex2opencode@acp-local`。
+2. `~/.claude/plugins/installed_plugins.json` 中是否有对应条目。
+3. `~/.claude/skills/` 下是否存在 `team-delegate` 和 `ian-think` 目录。
+
 ## 使用方式
+
+### Codex CLI
 
 安装并重启后，在 Codex CLI 使用自然语言发起任务，例如：
 
 ```text
 帮我用团队委派流程完成这个开发任务。设计和计划已经确认，直接进入实施。
 ```
+
+### Claude Code
+
+在 Claude Code 中同样使用自然语言发起任务，例如：
+
+```text
+帮我用团队委派流程完成这个开发任务。设计和计划已经确认，直接进入实施。
+```
+
+Claude Code 会自动识别并调用插件暴露的 `delegate.task.execute` 工具。
 
 实践建议：
 
