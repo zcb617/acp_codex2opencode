@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const PLUGIN_NAME = "acp-codex2opencode";
-const MARKETPLACE_NAME = "acp-local";
+const MARKETPLACE_NAME = "local-desktop-app-uploads";
 const PLUGIN_VERSION = "0.2.0";
 const SKILL_NAMES = ["team-delegate", "ian-think"];
 const GUIDE_FILES = [
@@ -51,6 +51,9 @@ async function main() {
   const projectRoot = path.resolve(scriptDir, "..");
   const claudeRoot = path.join(os.homedir(), ".claude");
   const cacheDir = path.join(claudeRoot, "plugins", "cache", MARKETPLACE_NAME, PLUGIN_NAME, PLUGIN_VERSION);
+  const marketplaceDir = path.join(claudeRoot, "plugins", "marketplaces", MARKETPLACE_NAME);
+  const marketplacePluginDir = path.join(marketplaceDir, PLUGIN_NAME);
+  const marketplaceManifestDir = path.join(marketplaceDir, ".claude-plugin");
   const installedPluginsPath = path.join(claudeRoot, "plugins", "installed_plugins.json");
   const settingsPath = path.join(claudeRoot, "settings.json");
   const claudeSkillRoot = path.join(claudeRoot, "skills");
@@ -88,6 +91,33 @@ async function main() {
     projectRoot,
     cacheDir,
     process.platform === "win32" ? "junction" : "dir"
+  );
+
+  console.log("[C.1/8] 注册 marketplace 到 marketplaces 目录...");
+  await mkdir(marketplaceManifestDir, { recursive: true });
+  await rm(marketplacePluginDir, { recursive: true, force: true });
+  await symlink(
+    projectRoot,
+    marketplacePluginDir,
+    process.platform === "win32" ? "junction" : "dir"
+  );
+  const marketplaceManifest = {
+    name: MARKETPLACE_NAME,
+    version: "1.0.0",
+    description: "Locally uploaded plugins via Claude Desktop app",
+    owner: { name: "Local User" },
+    plugins: [
+      {
+        name: PLUGIN_NAME,
+        version: PLUGIN_VERSION,
+        source: `./${PLUGIN_NAME}`
+      }
+    ]
+  };
+  await writeFile(
+    path.join(marketplaceManifestDir, "marketplace.json"),
+    `${JSON.stringify(marketplaceManifest, null, 2)}\n`,
+    "utf8"
   );
 
   console.log("[D/8] 注册插件到 installed_plugins.json...");
@@ -146,6 +176,8 @@ async function main() {
   await access(path.join(cacheDir, ".claude-plugin", "plugin.json"), constants.F_OK);
   await access(path.join(cacheDir, ".claude-plugin", "marketplace.json"), constants.F_OK);
   await access(path.join(cacheDir, "mcp-servers.json"), constants.F_OK);
+  await access(path.join(marketplaceManifestDir, "marketplace.json"), constants.F_OK);
+  await access(path.join(marketplacePluginDir, ".claude-plugin", "plugin.json"), constants.F_OK);
 
   const finalInstalled = JSON.parse(await readFile(installedPluginsPath, "utf8"));
   if (!finalInstalled.plugins?.[pluginRef]) {

@@ -5,13 +5,14 @@ import os from "node:os";
 import path from "node:path";
 
 const PLUGIN_NAME = "acp-codex2opencode";
-const MARKETPLACE_NAME = "acp-local";
+const MARKETPLACE_NAME = "local-desktop-app-uploads";
 const PLUGIN_VERSION = "0.2.0";
 const SKILL_NAMES = ["team-delegate", "ian-think"];
 
 async function main() {
   const claudeRoot = path.join(os.homedir(), ".claude");
   const cacheDir = path.join(claudeRoot, "plugins", "cache", MARKETPLACE_NAME, PLUGIN_NAME, PLUGIN_VERSION);
+  const marketplacePluginDir = path.join(claudeRoot, "plugins", "marketplaces", MARKETPLACE_NAME, PLUGIN_NAME);
   const installedPluginsPath = path.join(claudeRoot, "plugins", "installed_plugins.json");
   const settingsPath = path.join(claudeRoot, "settings.json");
   const claudeSkillRoot = path.join(claudeRoot, "skills");
@@ -51,6 +52,9 @@ async function main() {
 
   console.log("[C/6] 清理插件 cache...");
   await rm(cacheDir, { recursive: true, force: true });
+
+  console.log("[C.1/6] 清理 marketplace 插件目录...");
+  await rm(marketplacePluginDir, { recursive: true, force: true });
 
   console.log("[D/6] 清理旧版 marketplace 残留...");
   const oldMarketplaceRoot = path.join(os.homedir(), ".claude-local", "acp-marketplace");

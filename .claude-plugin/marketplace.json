@@ -11,7 +11,10 @@
   "plugins": [
     {
       "name": "acp-codex2opencode",
-      "source": "./plugins/acp-codex2opencode",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/zcb617/acp_codex2opencode.git"
+      },
       "description": "OpenCode ACP delegated closed-loop execution for Claude Code",
       "version": "0.2.0",
       "keywords": ["acp", "delegation", "mcp", "team-delegate", "workflow"],
