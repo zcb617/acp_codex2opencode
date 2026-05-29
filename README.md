@@ -82,21 +82,15 @@ npm run plugin:install-local
 claude --version
 ```
 
-然后执行安装：
+在 Claude Code 对话中执行以下命令：
 
 ```bash
-npm run plugin:install-claude
+/plugin marketplace add zcb617/acp_codex2opencode
+/plugin install acp-codex2opencode@acp-codex2opencode
+/reload-plugins
 ```
 
-看到 `CLAUDE-INSTALLATION-COMPLETED` 后，**重启 Claude Code**。
-
-安装脚本会自动完成以下动作：
-
-1. 构建插件并安装到 `~/.claude/plugins/cache/`。
-2. 注册插件到 `~/.claude/plugins/installed_plugins.json`。
-3. 启用插件并写入 `~/.claude/settings.json`。
-4. 安装 `team-delegate` 与 `ian-think` 到 `~/.claude/skills/`。
-5. 注册 MCP 服务器配置。
+安装完成后，插件、技能与 MCP 配置会自动加载，无需额外手动配置。
 
 **Claude Code 版本要求**：建议 `claude >= 0.2.x`，以确保 MCP 工具和技能系统兼容。如果安装后发现工具未加载，请尝试升级 Claude Code 到最新版本。
 
@@ -111,7 +105,8 @@ npm run plugin:uninstall-local
 **Claude Code：**
 
 ```bash
-npm run plugin:uninstall-claude
+/plugin uninstall acp-codex2opencode@acp-codex2opencode
+/reload-plugins
 ```
 
 ### 安装验证
@@ -128,11 +123,11 @@ codex tool list | findstr delegate
 
 **Claude Code：**
 
-重启后在对话中输入 `/tools`，在列表中查找以 `delegate.` 开头的工具。若未出现，请检查：
+安装完成后执行 `/reload-plugins`，然后在对话中输入 `/tools`，在列表中查找以 `delegate.` 开头的工具。若未出现，请检查：
 
-1. `~/.claude/settings.json` 中 `enabledPlugins` 是否包含 `acp-codex2opencode@acp-local`。
-2. `~/.claude/plugins/installed_plugins.json` 中是否有对应条目。
-3. `~/.claude/skills/` 下是否存在 `team-delegate` 和 `ian-think` 目录。
+1. `/plugin` 中 Installed 页是否显示 `acp-codex2opencode`。
+2. `/plugin` 中 Errors 页是否有加载错误。
+3. 尝试重新执行 `/plugin install acp-codex2opencode@acp-codex2opencode` 和 `/reload-plugins`。
 
 ## 使用方式
 
