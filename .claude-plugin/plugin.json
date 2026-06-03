@@ -7,9 +7,15 @@
     "email": "zhangchenbin@0573zzz.com"
   },
   "homepage": "https://example.com",
-  "repository": "https://example.com/acp-codex2opencode.git",
+  "repository": "https://example.com/acp_codex2opencode.git",
   "license": "MIT",
   "keywords": ["acp", "delegation", "mcp", "team-delegate", "workflow"],
   "mcpServers": "./mcp-servers.json",
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^6.0.1",
+    "zod": "^3.23.8"
+  }
 }
