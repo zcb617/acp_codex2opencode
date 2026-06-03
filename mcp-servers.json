@@ -1,7 +1,7 @@
 {
   "acp-codex2opencode": {
-    "command": "node",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/dist/plugin/mcp-server.js"],
+    "command": "npx",
+    "args": ["tsx", "${CLAUDE_PLUGIN_ROOT}/src/plugin/mcp-server.ts"],
     "env": {
       "OPENCODE_BIN_PATH": "opencode",
       "ACP_BRIDGE_STATE_DIR": "${CLAUDE_PLUGIN_ROOT}/runtime",
