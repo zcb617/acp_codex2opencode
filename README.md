@@ -90,10 +90,10 @@ claude --version
 /reload-plugins
 ```
 
-安装完成后，进入插件目录安装 npm 依赖：
+安装完成后，进入插件目录安装 npm 依赖（注意替换 `<版本号>` 为实际安装的版本）：
 
 ```bash
-cd ~/.claude/plugins/cache/acp-codex2opencode/acp-codex2opencode/0.2.0
+cd ~/.claude/plugins/cache/acp-codex2opencode/acp-codex2opencode/<版本号>
 npm install
 ```
 
