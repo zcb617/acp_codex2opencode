@@ -90,7 +90,20 @@ claude --version
 /reload-plugins
 ```
 
-安装完成后，插件、技能与 MCP 配置会自动加载，无需额外手动配置。
+安装完成后，进入插件目录安装 npm 依赖：
+
+```bash
+cd ~/.claude/plugins/cache/acp-codex2opencode/acp-codex2opencode/0.2.0
+npm install
+```
+
+然后重启 Claude Code：
+
+```bash
+/reload-plugins
+```
+
+> **注意**：Claude Code 插件系统目前不会自动安装 npm 依赖，需要手动执行上述步骤。
 
 **Claude Code 版本要求**：建议 `claude >= 0.2.x`，以确保 MCP 工具和技能系统兼容。如果安装后发现工具未加载，请尝试升级 Claude Code 到最新版本。
 
