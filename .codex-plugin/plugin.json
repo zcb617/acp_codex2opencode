@@ -1,6 +1,6 @@
 {
   "name": "acp-codex2opencode",
-  "version": "0.2.0",
+  "version": "0.2.0+codex.20260715041821",
   "description": "Codex plugin for OpenCode ACP delegation closed-loop",
   "author": {
     "name": "codex",
@@ -32,9 +32,9 @@
     "privacyPolicyURL": "https://example.com/privacy",
     "termsOfServiceURL": "https://example.com/terms",
     "defaultPrompt": [
-      "先判定 start_phase 与 development_type，再调用 delegate.task.execute action=start。",
-      "start 必须带 start_phase 和 development_type；feature 走开发指南，bugfix 走 BUG 指南，不清楚用 need_user_input。",
-      "给了下一次跟进时间就优先调 automation_update(kind=heartbeat,destination=thread,status=ACTIVE)；没这个能力就别结束当前轮，到点自动再查，禁用手动补触发冒充自动继续。"
+      "\u5148\u5224\u5b9a start_phase \u4e0e development_type\uff0c\u518d\u8c03\u7528 delegate.task.execute action=start\u3002",
+      "start \u5fc5\u987b\u5e26 start_phase \u548c development_type\uff1bfeature \u8d70\u5f00\u53d1\u6307\u5357\uff0cbugfix \u8d70 BUG \u6307\u5357\uff0c\u4e0d\u6e05\u695a\u7528 need_user_input\u3002",
+      "\u7ed9\u4e86\u4e0b\u4e00\u6b21\u8ddf\u8fdb\u65f6\u95f4\u5c31\u4f18\u5148\u8c03 automation_update(kind=heartbeat,destination=thread,status=ACTIVE)\uff1b\u6ca1\u8fd9\u4e2a\u80fd\u529b\u5c31\u522b\u7ed3\u675f\u5f53\u524d\u8f6e\uff0c\u5230\u70b9\u81ea\u52a8\u518d\u67e5\uff0c\u7981\u7528\u624b\u52a8\u8865\u89e6\u53d1\u5192\u5145\u81ea\u52a8\u7ee7\u7eed\u3002"
     ],
     "brandColor": "#0B6E4F"
   }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { access, constants, cp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, constants, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,24 +9,19 @@ import { spawnSync } from "node:child_process";
 const PLUGIN_NAME = "acp-codex2opencode";
 const MARKETPLACE_NAME = "acp-local";
 const MARKETPLACE_DISPLAY_NAME = "ACP Local Plugins";
-const SKILL_NAMES = ["team-delegate", "ian-think"];
-const MCP_SERVER_ID = "acp_codex2opencode_plugin";
-const DEFAULT_WORKFLOW_MODEL = "llm-router-openai-compatible/kimi-for-roo";
+const LEGACY_MCP_SERVER_ID = "acp_codex2opencode_plugin";
+const LEGACY_GLOBAL_SKILL_NAMES = ["team-delegate", "ian-think"];
 const GUIDE_FILES = [
   "可交付开发设计文档编写指南-v0.1.md",
   "可交付开发计划编写指南-v0.1.md",
   "可交付BUG修改设计文档编写指南-v0.1.md",
   "可交付BUG修改计划编写指南-v0.1.md"
 ];
-const IAN_THINK_SCENE_FILES = ["产品设计.md", "复制对标.md", "内容创作.md", "选择赛道.md", "营销成交.md", "skill.md"];
-const DEFAULT_OPENCODE_CONFIG_CONTENT = JSON.stringify({
-  permission: "allow",
-  model: DEFAULT_WORKFLOW_MODEL
-});
+const IAN_THINK_SCENE_FILES = ["产品设计.md", "内容创作.md", "复制对标.md", "选择赛道.md", "营销成交.md", "skill.md"];
 
 function quoteCmdArg(arg) {
   if (/[\s"&|<>^]/.test(arg)) {
-    return `"${arg.replace(/"/g, '""')}"`;
+    return '"' + arg.replace(/"/g, '""') + '"';
   }
   return arg;
 }
@@ -34,15 +29,9 @@ function quoteCmdArg(arg) {
 function runSpawn(command, args, cwd, stdio) {
   if (process.platform === "win32") {
     const cmdLine = [command, ...args].map(quoteCmdArg).join(" ");
-    return spawnSync("cmd.exe", ["/d", "/s", "/c", cmdLine], {
-      cwd,
-      stdio
-    });
+    return spawnSync("cmd.exe", ["/d", "/s", "/c", cmdLine], { cwd, stdio });
   }
-  return spawnSync(command, args, {
-    cwd,
-    stdio
-  });
+  return spawnSync(command, args, { cwd, stdio });
 }
 
 function run(command, args, cwd) {
@@ -51,7 +40,7 @@ function run(command, args, cwd) {
     throw result.error;
   }
   if (result.status !== 0) {
-    throw new Error(`命令执行失败: ${command} ${args.join(" ")}`);
+    throw new Error("命令执行失败: " + command + " " + args.join(" "));
   }
 }
 
@@ -63,127 +52,65 @@ function hasFlag(flag) {
   return process.argv.includes(flag);
 }
 
-function sectionHeader(pluginRef) {
-  return `[plugins."${pluginRef}"]`;
-}
-
-function parseConfig(content) {
-  const normalized = content.replace(/\r\n/g, "\n");
-  const eol = content.includes("\r\n") ? "\r\n" : "\n";
-  return { lines: normalized.split("\n"), eol };
-}
-
-function findSection(lines, header) {
-  const start = lines.findIndex((line) => line.trim() === header);
-  if (start < 0) {
-    return { start: -1, end: -1 };
-  }
-  let end = start + 1;
-  while (end < lines.length && !/^\s*\[.*\]\s*$/.test(lines[end])) {
-    end += 1;
-  }
-  return { start, end };
-}
-
-function upsertEnabledSection(content, pluginRef, enabled) {
-  const { lines, eol } = parseConfig(content);
-  const header = sectionHeader(pluginRef);
-  const { start, end } = findSection(lines, header);
-  const enabledLine = `enabled = ${enabled ? "true" : "false"}`;
-
-  if (start < 0) {
-    if (lines.length > 0 && lines[lines.length - 1] !== "") {
-      lines.push("");
+async function readOptionalFile(filePath) {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return null;
     }
-    lines.push(header, enabledLine);
-  } else {
-    let enabledIdx = -1;
-    for (let idx = start + 1; idx < end; idx += 1) {
-      if (/^\s*enabled\s*=/.test(lines[idx])) {
-        enabledIdx = idx;
-        break;
-      }
+    throw error;
+  }
+}
+
+async function removeLegacyGlobalSkillCopies(projectRoot) {
+  const legacySkillRoot = path.join(os.homedir(), ".codex", "skills");
+  const removedSkillNames = [];
+
+  for (const skillName of LEGACY_GLOBAL_SKILL_NAMES) {
+    const sourceSkillFile = path.join(projectRoot, "skills", skillName, "SKILL.md");
+    const legacySkillDir = path.join(legacySkillRoot, skillName);
+    const legacySkillFile = path.join(legacySkillDir, "SKILL.md");
+    const [sourceContents, legacyContents] = await Promise.all([
+      readFile(sourceSkillFile, "utf8"),
+      readOptionalFile(legacySkillFile)
+    ]);
+
+    if (legacyContents === null) {
+      continue;
     }
-    if (enabledIdx >= 0) {
-      lines[enabledIdx] = enabledLine;
-    } else {
-      lines.splice(end, 0, enabledLine);
+    if (legacyContents !== sourceContents) {
+      throw new Error(
+        "检测到同名全局技能 " + skillName +
+          "，其内容不是本插件可确认的旧版副本。为保护用户自定义内容，安装器不会删除它；" +
+          "请先备份或改名 ~/.codex/skills/" + skillName + "，然后重新安装。"
+      );
     }
+
+    await rm(legacySkillDir, { recursive: true, force: false });
+    removedSkillNames.push(skillName);
   }
 
-  return lines.join("\n").replace(/\n/g, eol);
-}
-
-function upsertSection(lines, header, bodyLines) {
-  const { start, end } = findSection(lines, header);
-  if (start >= 0) {
-    lines.splice(start, end - start);
-  }
-  if (lines.length > 0 && lines[lines.length - 1] !== "") {
-    lines.push("");
-  }
-  lines.push(header, ...bodyLines);
-}
-
-function toTomlPath(filePath) {
-  return filePath.replace(/\\/g, "/");
-}
-
-function escapeTomlString(value) {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-function upsertMcpServerSection(content, options) {
-  const { lines, eol } = parseConfig(content);
-  const header = `[mcp_servers.${MCP_SERVER_ID}]`;
-  const escapedConfigContent = escapeTomlString(options.opencodeConfigContent);
-  const envInline =
-    `env = { OPENCODE_BIN_PATH = "opencode", ACP_BRIDGE_STATE_DIR = "${options.stateDir}", ` +
-    `ACP_BRIDGE_LOG_DIR = "${options.logDir}", ACP_BRIDGE_LOG_LEVEL = "INFO", ` +
-    `ACP_BRIDGE_TURN_TIMEOUT_MS = "86400000", ACP_BRIDGE_WORKFLOW_SYNC_WAIT_MS = "180000", ACP_BRIDGE_ALLOWED_WORKSPACES = "", ` +
-    `OPENCODE_CONFIG_CONTENT = "${escapedConfigContent}" }`;
-  upsertSection(lines, header, [
-    'command = "node"',
-    `args = ["${options.serverEntry}"]`,
-    "startup_timeout_sec = 30",
-    "tool_timeout_sec = 360",
-    envInline
-  ]);
-  return lines.join("\n").replace(/\n/g, eol);
+  return removedSkillNames;
 }
 
 async function main() {
   const skipNpmInstall = hasFlag("--skip-npm-install");
   const skipBuild = hasFlag("--skip-build");
-
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
   const projectRoot = path.resolve(scriptDir, "..");
   const marketplaceRoot = path.join(os.homedir(), ".codex-local", "acp-marketplace");
   const marketplacePluginsDir = path.join(marketplaceRoot, "plugins");
   const marketplaceManifestDir = path.join(marketplaceRoot, ".agents", "plugins");
   const marketplaceManifestPath = path.join(marketplaceManifestDir, "marketplace.json");
-  const pluginCacheRoot = path.join(
-    os.homedir(),
-    ".codex",
-    "plugins",
-    "cache",
-    MARKETPLACE_NAME,
-    PLUGIN_NAME
-  );
   const linkedPluginDir = path.join(marketplacePluginsDir, PLUGIN_NAME);
-  const codexConfigPath = path.join(os.homedir(), ".codex", "config.toml");
-  const codexSkillRoot = path.join(os.homedir(), ".codex", "skills");
   const sourceTeamDelegateSkillDir = path.join(projectRoot, "skills", "team-delegate");
   const sourceIanThinkSkillDir = path.join(projectRoot, "skills", "ian-think");
-  const targetTeamDelegateSkillDir = path.join(codexSkillRoot, "team-delegate");
-  const targetIanThinkSkillDir = path.join(codexSkillRoot, "ian-think");
-  const mcpServerEntry = toTomlPath(path.join(projectRoot, "dist", "plugin", "mcp-server.js"));
-  const bridgeStateDir = toTomlPath(path.join(os.homedir(), ".codex-local", "acp-bridge-runtime"));
-  const bridgeLogDir = toTomlPath(path.join(bridgeStateDir, "logs"));
-  const pluginRef = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
+  const pluginRef = PLUGIN_NAME + "@" + MARKETPLACE_NAME;
 
-  console.log("[A/9] 检查前置条件...");
+  console.log("[A/8] 检查前置条件...");
   await access(path.join(projectRoot, ".codex-plugin", "plugin.json"), constants.F_OK);
+  await access(path.join(projectRoot, ".mcp.json"), constants.F_OK);
   await access(path.join(projectRoot, "package.json"), constants.F_OK);
   await access(path.join(sourceTeamDelegateSkillDir, "SKILL.md"), constants.F_OK);
   for (const guideFile of GUIDE_FILES) {
@@ -194,7 +121,7 @@ async function main() {
     await access(path.join(sourceIanThinkSkillDir, "scenes", sceneFile), constants.F_OK);
   }
 
-  console.log("[B/9] 构建插件...");
+  console.log("[B/8] 构建插件...");
   if (!skipNpmInstall) {
     run("npm", ["install"], projectRoot);
   }
@@ -202,75 +129,47 @@ async function main() {
     run("npm", ["run", "prepare:plugin"], projectRoot);
   }
 
-  console.log("[C/9] 清理当前插件旧 cache...");
-  await rm(pluginCacheRoot, { recursive: true, force: true });
-
-  console.log("[D/9] 生成本地 marketplace...");
+  console.log("[C/8] 清理旧版 Codex 安装残留...");
+  runIgnoreError("codex", ["plugin", "remove", pluginRef], projectRoot);
+  runIgnoreError("codex", ["mcp", "remove", LEGACY_MCP_SERVER_ID], projectRoot);
+  runIgnoreError("codex", ["plugin", "marketplace", "remove", MARKETPLACE_NAME], projectRoot);
   await rm(marketplaceRoot, { recursive: true, force: true });
+
+  console.log("[D/8] 生成本地 Marketplace...");
   await mkdir(marketplacePluginsDir, { recursive: true });
   await mkdir(marketplaceManifestDir, { recursive: true });
-  await symlink(
-    projectRoot,
-    linkedPluginDir,
-    process.platform === "win32" ? "junction" : "dir"
-  );
-
+  await symlink(projectRoot, linkedPluginDir, process.platform === "win32" ? "junction" : "dir");
   const manifest = {
     name: MARKETPLACE_NAME,
     interface: { displayName: MARKETPLACE_DISPLAY_NAME },
     plugins: [
       {
         name: PLUGIN_NAME,
-        source: { source: "local", path: `./plugins/${PLUGIN_NAME}` },
+        source: { source: "local", path: "./plugins/" + PLUGIN_NAME },
         policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
         category: "Coding"
       }
     ]
   };
-  await writeFile(marketplaceManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await writeFile(marketplaceManifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
 
-  console.log("[E/9] 注册 marketplace...");
-  runIgnoreError("codex", ["plugin", "marketplace", "remove", MARKETPLACE_NAME], projectRoot);
+  console.log("[E/8] 注册 Marketplace...");
   run("codex", ["plugin", "marketplace", "add", marketplaceRoot], projectRoot);
 
-  console.log("[F/9] 启用插件...");
-  await mkdir(path.dirname(codexConfigPath), { recursive: true });
-  let currentConfig = "";
-  try {
-    currentConfig = await readFile(codexConfigPath, "utf8");
-  } catch {
-    currentConfig = "";
-  }
-  const pluginEnabledConfig = upsertEnabledSection(currentConfig, pluginRef, true);
-  const mcpUpdatedConfig = upsertMcpServerSection(pluginEnabledConfig, {
-    serverEntry: mcpServerEntry,
-    stateDir: bridgeStateDir,
-    logDir: bridgeLogDir,
-    opencodeConfigContent: DEFAULT_OPENCODE_CONFIG_CONTENT
-  });
-  await writeFile(codexConfigPath, mcpUpdatedConfig, "utf8");
+  console.log("[F/8] 安装并启用插件...");
+  run("codex", ["plugin", "add", pluginRef], projectRoot);
 
-  console.log("[G/9] 安装 team-delegate 与 ian-think 技能到全局目录...");
-  await mkdir(codexSkillRoot, { recursive: true });
-  for (const skillName of SKILL_NAMES) {
-    await rm(path.join(codexSkillRoot, skillName), { recursive: true, force: true });
+  console.log("[G/8] 迁移已确认的旧版全局技能副本...");
+  const removedSkillNames = await removeLegacyGlobalSkillCopies(projectRoot);
+  if (removedSkillNames.length > 0) {
+    console.log("已移除旧版全局技能副本: " + removedSkillNames.join(", "));
   }
-  await cp(sourceTeamDelegateSkillDir, targetTeamDelegateSkillDir, { recursive: true });
-  await cp(sourceIanThinkSkillDir, targetIanThinkSkillDir, { recursive: true });
 
-  console.log("[H/9] 安装校验...");
+  console.log("[H/8] 安装校验...");
   await access(path.join(projectRoot, "dist", "plugin", "mcp-server.js"), constants.F_OK);
   await access(marketplaceManifestPath, constants.F_OK);
-  await access(path.join(targetTeamDelegateSkillDir, "SKILL.md"), constants.F_OK);
-  for (const guideFile of GUIDE_FILES) {
-    await access(path.join(targetTeamDelegateSkillDir, "docs", guideFile), constants.F_OK);
-  }
-  await access(path.join(targetIanThinkSkillDir, "SKILL.md"), constants.F_OK);
-  for (const sceneFile of IAN_THINK_SCENE_FILES) {
-    await access(path.join(targetIanThinkSkillDir, "scenes", sceneFile), constants.F_OK);
-  }
+  run("codex", ["plugin", "list"], projectRoot);
 
-  console.log("[I/9] 完成。请重启 Codex，然后在插件列表确认已启用。");
   console.log("INSTALLATION-COMPLETED");
 }
 

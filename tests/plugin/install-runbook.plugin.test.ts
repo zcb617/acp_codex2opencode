@@ -17,8 +17,6 @@ describe("PT-00 install runbook contract", () => {
     expect(runbook).toContain("线性安装步骤（A 到 G）");
     expect(runbook).toContain("team-delegate");
     expect(runbook).toContain("ian-think");
-    expect(runbook).toContain("~/.codex/skills/team-delegate/docs/");
-    expect(runbook).toContain("~/.codex/skills/ian-think/SKILL.md");
     expect(runbook).toContain("~/.codex/plugins/cache/acp-local/acp-codex2opencode/");
     expect(runbook).toContain("重装后如果需要验证 plugin cache 是否已刷新");
     expect(runbook).toContain("计划确认后必须先选择实施执行方");
@@ -27,7 +25,16 @@ describe("PT-00 install runbook contract", () => {
     expect(runbook).toContain("86400000");
     expect(runbook).toContain("ACP_BRIDGE_WORKFLOW_SYNC_WAIT_MS=180000");
     expect(runbook).toContain("首次同步等待 3 分钟");
-    expect(runbook).toContain("[mcp_servers.acp_codex2opencode_plugin]");
+    expect(runbook).toContain("codex plugin add");
+    expect(runbook).toContain("codex mcp list");
+    expect(runbook).toContain("工作目录");
+    expect(runbook).toContain("acp-codex2opencode");
+    expect(runbook).toContain("不再额外写入全局 MCP 配置");
+    expect(runbook).toContain("旧版全局技能副本");
+    expect(runbook).toContain("内容完全一致");
+    expect(runbook).not.toContain("[mcp_servers.acp_codex2opencode_plugin]");
+    expect(runbook).not.toContain("~/.codex/skills/team-delegate");
+    expect(runbook).not.toContain("~/.codex/skills/ian-think");
     expect(runbook).toContain("真实 Codex CLI 交付验证入口");
     expect(runbook).toContain("帮我用团队委派流程完成这个开发任务");
     expect(runbook).toContain("automation_update");

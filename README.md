@@ -34,7 +34,7 @@
 - 开发类型分流：支持 `feature`、`bugfix`、`need_user_input`，并映射对应的设计/计划指南。
 - 实施执行方选择：计划确认后先选“主会话实施”或“ACP 实施”，再决定是否需要模型确认。
 - 交付闭环：实施完成后必须进入真实交付测试，失败后进入整改方案/计划与复测链路。
-- 本地安装友好：提供一键安装与卸载脚本，并自动注入插件、技能与兜底 MCP 配置。
+- 本地安装友好：提供一键安装与卸载脚本，由 Codex 插件生命周期统一加载技能与 MCP 服务。
 
 ## 工作流概览
 
@@ -70,9 +70,13 @@ npm run plugin:install-local
 安装脚本会自动完成以下动作：
 
 1. 构建插件并注册本地 marketplace。
-2. 启用插件并写入 `~/.codex/config.toml`。
-3. 安装 `team-delegate` 与 `ian-think` 到 `~/.codex/skills/`。
-4. 注入 `[mcp_servers.acp_codex2opencode_plugin]` 兜底配置。
+2. 通过 `codex plugin add` 启用插件。
+3. 从插件缓存加载 `team-delegate` 与 `ian-think`。
+4. 从插件内置 MCP 配置启动唯一的委派服务，并把工作目录固定在插件缓存根目录。
+
+安装器不会手工写入第二个全局 MCP 服务，也不会修改 Claude Code 的清单、MCP 配置或安装流程。安装完成后可执行 `codex plugin list` 和 `codex mcp list` 验证插件已启用、MCP 工作目录已解析。
+
+若曾使用旧版本地安装器，安装过程中会迁移可确认的旧版全局技能副本：只有当同名 `SKILL.md` 与本项目资源内容完全一致时才会移除，避免旧副本遮蔽插件缓存；内容不同的用户自定义技能不会被删除，安装器会提示先备份或改名后重试。
 
 ### Claude Code 安装
 

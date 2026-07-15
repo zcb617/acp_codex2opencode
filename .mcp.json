@@ -5,6 +5,7 @@
       "args": [
         "./dist/plugin/mcp-server.js"
       ],
+      "cwd": ".",
       "env": {
         "OPENCODE_BIN_PATH": "opencode",
         "ACP_BRIDGE_STATE_DIR": "./runtime",

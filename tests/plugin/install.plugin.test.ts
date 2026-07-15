@@ -44,8 +44,8 @@ describe("PT-01 plugin install contract", () => {
     const manifest = JSON.parse(raw) as Record<string, unknown>;
 
     expect(manifest.name).toBe("acp-codex2opencode");
-    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/u);
-    expect(manifest.version).toBe(pkg.version);
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+\+codex\.\d+$/u);
+    expect((manifest.version as string).split("+", 1)[0]).toBe(pkg.version);
     expect(manifest.skills).toBe("./skills/");
     expect(manifest.mcpServers).toBe("./.mcp.json");
     const promptList = ((manifest.interface as { defaultPrompt?: string[] })?.defaultPrompt) ?? [];
@@ -70,6 +70,7 @@ describe("PT-01 plugin install contract", () => {
         {
           command?: string;
           args?: string[];
+          cwd?: string;
           env?: Record<string, string>;
         }
       >;
@@ -78,6 +79,7 @@ describe("PT-01 plugin install contract", () => {
 
     expect(server?.command).toBe("node");
     expect(server?.args?.[0]).toBe("./dist/plugin/mcp-server.js");
+    expect(server?.cwd).toBe(".");
     expect(server?.env?.ACP_BRIDGE_TURN_TIMEOUT_MS).toBe("86400000");
     expect(server?.env?.ACP_BRIDGE_WORKFLOW_SYNC_WAIT_MS).toBe("180000");
     expect(server?.env?.OPENCODE_CONFIG_CONTENT).toContain("\"permission\":\"allow\"");
@@ -204,17 +206,31 @@ describe("PT-01 plugin install contract", () => {
     expect(readme).toContain("持续跟进中");
   });
 
-  it("should clear only this plugin cache in install and uninstall scripts", async () => {
+  it("should use the Codex plugin lifecycle without legacy MCP or skill shadowing", async () => {
     const installScript = await readFile(join(root, "scripts", "install-local.mjs"), "utf8");
     const uninstallScript = await readFile(join(root, "scripts", "uninstall-local.mjs"), "utf8");
 
-    for (const script of [installScript, uninstallScript]) {
-      expect(script).toContain(".codex");
-      expect(script).toContain("plugins");
-      expect(script).toContain("cache");
-      expect(script).toContain("acp-local");
-      expect(script).toContain("acp-codex2opencode");
-    }
+    expect(installScript).toContain('const LEGACY_MCP_SERVER_ID = "acp_codex2opencode_plugin";');
+    expect(installScript).toContain('const LEGACY_GLOBAL_SKILL_NAMES = ["team-delegate", "ian-think"];');
+    expect(installScript).toContain('["mcp", "remove", LEGACY_MCP_SERVER_ID]');
+    expect(installScript).toContain('["plugin", "add", pluginRef]');
+    expect(installScript).toContain("removeLegacyGlobalSkillCopies");
+    expect(installScript).toContain("legacyContents !== sourceContents");
+    expect(installScript).toContain('await rm(legacySkillDir, { recursive: true, force: false });');
+    expect(installScript).not.toContain("upsertMcpServerSection");
+    expect(installScript).not.toContain("writeFile(codexConfigPath");
+    expect(installScript).not.toContain("cp(source");
+
+    expect(uninstallScript).toContain('const LEGACY_MCP_SERVER_ID = "acp_codex2opencode_plugin";');
+    expect(uninstallScript).toContain('["plugin", "remove", pluginRef]');
+    expect(uninstallScript).toContain('["mcp", "remove", LEGACY_MCP_SERVER_ID]');
+    expect(uninstallScript).not.toContain("removeSectionByHeader");
+    expect(uninstallScript).not.toContain("codexSkillRoot");
+
+    const claudeManifest = await readFile(join(root, ".claude-plugin", "plugin.json"), "utf8");
+    const claudeMcpConfig = await readFile(join(root, "mcp-servers.json"), "utf8");
+    expect(claudeManifest).toContain('"mcpServers": "./mcp-servers.json"');
+    expect(claudeMcpConfig).toContain("${CLAUDE_PLUGIN_ROOT}");
   });
 
   it("should package all design and planning guide docs with the team-delegate skill", async () => {
