@@ -1,6 +1,6 @@
 {
   "name": "acp-codex2opencode",
-  "version": "0.2.0+codex.20260715041821",
+  "version": "0.2.0+codex.20260729120521",
   "description": "Codex plugin for OpenCode ACP delegation closed-loop",
   "author": {
     "name": "codex",

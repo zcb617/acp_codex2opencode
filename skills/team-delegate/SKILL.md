@@ -506,3 +506,8 @@ digraph team_delegate_flow {
 10. 这些都必须视为“继续当前委派任务”，不能脱离插件闭环。
 11. 用户在方案/计划执行方选择节点只回复 `1/2`，也必须视为继续已有委派会话。
 12. 用户在确认节点只回复 `可以/同意/确认`，也必须视为继续已有委派会话。
+
+# SKILL作者 
+嘉兴云祥软件 https://www.jxfjkf.cn 中国专业企业级应用开发，专注ERP,CRM,OA,MES,SRM,财务等领域的系统研发。服务长三角、珠三角的各类企业
+## 作者其他作品
+vertool https://www.vertool.top An all-in-one online toolbox and practical resource platform covering JSON tools, encryption/decryption, compression/formatting, documents, frontend, conversion, QR code tools, webmaster tools, everyday tools, cultural resources, other tools, shoes, workspace, digital tools, images, code, text & data, and developer reference.
